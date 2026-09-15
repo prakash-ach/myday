@@ -44,19 +44,26 @@ if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split("."
 fi
 ok "Node $(node -v)"
 
-# ---------------------------------------------------------------- caddy
-say "Web server"
-if ! command -v caddy >/dev/null; then
-  apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https gnupg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' -o /tmp/caddy.key \
-    || die "Couldn't download the Caddy key. Check the droplet's internet."
-  [ -s /tmp/caddy.key ] || die "Caddy key came back empty, try again in a minute."
-  gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /tmp/caddy.key
-  rm -f /tmp/caddy.key
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -qq && apt-get install -y -qq caddy
+# ---------------------------------------------------------------- web server
+# This droplet may already be serving other sites. Work out what's in
+# front of port 80 and add to it rather than replacing it.
+say "Looking at what's already running"
+WEB=""
+if systemctl is-active --quiet nginx 2>/dev/null; then WEB=nginx
+elif systemctl is-active --quiet apache2 2>/dev/null; then WEB=apache
+elif systemctl is-active --quiet caddy 2>/dev/null; then WEB=caddy
+elif command -v caddy >/dev/null; then WEB=caddy-installed
 fi
-ok "Caddy ready"
+
+case "$WEB" in
+  nginx)  ok "nginx is serving this box — MYDAY will be added as another site" ;;
+  apache) ok "Apache is serving this box — MYDAY will be added as another site" ;;
+  caddy|caddy-installed) ok "Caddy is here — MYDAY will be added to it" ;;
+  *)      ok "nothing on port 80 yet — Caddy will be installed" ;;
+esac
+
+OTHERS="$(ls /etc/nginx/sites-enabled 2>/dev/null | tr '\n' ' ')"
+[ -n "$OTHERS" ] && echo "    existing nginx sites: $OTHERS"
 
 # ---------------------------------------------------------------- files
 say "App files"
@@ -106,15 +113,22 @@ if command -v ufw >/dev/null; then
   ufw allow OpenSSH >/dev/null 2>&1 || true
   ufw allow 80/tcp  >/dev/null 2>&1 || true
   ufw allow 443/tcp >/dev/null 2>&1 || true
-  ufw --force enable >/dev/null 2>&1 || true
-  ok "22, 80 and 443 open"
+  # Not enabling ufw here: on a box already serving sites, turning the
+  # firewall on mid-flight is a good way to lock yourself out.
+  ok "22, 80 and 443 allowed (firewall left as you had it)"
 fi
 
 # ---------------------------------------------------------------- https
 say "HTTPS for $DOMAIN"
-if ! grep -q "^$DOMAIN" /etc/caddy/Caddyfile 2>/dev/null; then
-  [ -f /etc/caddy/Caddyfile ] && cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-myday
-  cat > /etc/caddy/Caddyfile <<CADDY
+
+add_to_caddy() {
+  touch /etc/caddy/Caddyfile
+  if grep -q "^$DOMAIN" /etc/caddy/Caddyfile; then
+    ok "already in the Caddyfile, leaving it alone"
+  else
+    cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.backup.$(date +%Y%m%d%H%M%S)"
+    cat >> /etc/caddy/Caddyfile <<CADDY
+
 $DOMAIN {
     reverse_proxy 127.0.0.1:$PORT
     encode gzip zstd
@@ -125,9 +139,79 @@ $DOMAIN {
     }
 }
 CADDY
-fi
-systemctl reload caddy 2>/dev/null || systemctl restart caddy
-ok "Caddy pointed at the app"
+    ok "added to the end of the Caddyfile, your other sites untouched"
+  fi
+  systemctl reload caddy 2>/dev/null || systemctl restart caddy
+}
+
+add_to_nginx() {
+  local SITE=/etc/nginx/sites-available/myday
+  if [ -f "$SITE" ]; then
+    ok "nginx site already exists, leaving it alone"
+  else
+    cat > "$SITE" <<NGINX
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+
+    location / {
+        proxy_pass http://127.0.0.1:$PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+NGINX
+    ln -sf "$SITE" /etc/nginx/sites-enabled/myday
+    ok "nginx site added, your other sites untouched"
+  fi
+  nginx -t >/dev/null 2>&1 || die "nginx rejected the new config. Nothing reloaded, your sites are still up."
+  systemctl reload nginx
+
+  if command -v certbot >/dev/null; then
+    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect >/dev/null 2>&1 \
+      && ok "certificate issued by certbot" \
+      || echo "    Certificate not issued automatically. Run:  certbot --nginx -d $DOMAIN"
+  else
+    echo "    No certbot here. For HTTPS, either:"
+    echo "      apt-get install -y certbot python3-certbot-nginx && certbot --nginx -d $DOMAIN"
+    echo "    or set the Cloudflare record for $DOMAIN to Proxied with SSL/TLS mode Flexible."
+  fi
+}
+
+case "$WEB" in
+  nginx)  add_to_nginx ;;
+  apache)
+    cat <<APACHE
+    Apache is running, and I won't touch its config without you looking.
+    Add this to a new file, /etc/apache2/sites-available/myday.conf:
+
+      <VirtualHost *:80>
+        ServerName $DOMAIN
+        ProxyPreserveHost On
+        ProxyPass / http://127.0.0.1:$PORT/
+        ProxyPassReverse / http://127.0.0.1:$PORT/
+      </VirtualHost>
+
+    Then:  a2enmod proxy proxy_http && a2ensite myday && systemctl reload apache2
+    And for HTTPS:  certbot --apache -d $DOMAIN
+APACHE
+    ;;
+  caddy|caddy-installed) add_to_caddy ;;
+  *)
+    apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https gnupg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' -o /tmp/caddy.key || die "Couldn't fetch the Caddy key."
+    [ -s /tmp/caddy.key ] || die "Caddy key came back empty."
+    gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /tmp/caddy.key
+    rm -f /tmp/caddy.key
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
+    apt-get update -qq && apt-get install -y -qq caddy
+    add_to_caddy
+    ;;
+esac
 
 # ---------------------------------------------------------------- account
 say "Your account"
