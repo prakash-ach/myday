@@ -95,15 +95,24 @@ async function serveStatic(req, res, urlPath) {
   const full = path.join(PUBLIC_DIR, rel);
   if (!full.startsWith(PUBLIC_DIR)) return send(res, 403, "Forbidden");
   try {
+    const stat = await fsp.stat(full);
     const data = await fsp.readFile(full);
     const type = MIME[path.extname(full).toLowerCase()] || "application/octet-stream";
-    const cache = rel === "index.html" ? "no-store" : "public, max-age=604800";
-    // The bundle is the only big file; gzip it and nothing else matters.
-    if (/gzip/.test(req.headers["accept-encoding"] || "") && data.length > 4096) {
-      return send(res, 200, zlib.gzipSync(data),
-        { "content-type": type, "content-encoding": "gzip", "cache-control": cache });
+
+    /* An update replaces app.js but keeps the name, so a long cache would
+       leave people staring at the old app. Instead: tag it, and let the
+       browser ask "has this changed?" every time. Unchanged is a 304 with
+       no body, so it stays fast, and a new build shows up immediately. */
+    const tag = '"' + stat.size.toString(36) + "-" + Math.floor(stat.mtimeMs).toString(36) + '"';
+    if (req.headers["if-none-match"] === tag) {
+      return send(res, 304, "", { etag: tag, "cache-control": "no-cache" });
     }
-    send(res, 200, data, { "content-type": type, "cache-control": cache });
+    const headers = { "content-type": type, etag: tag, "cache-control": "no-cache" };
+
+    if (/gzip/.test(req.headers["accept-encoding"] || "") && data.length > 4096) {
+      return send(res, 200, zlib.gzipSync(data), { ...headers, "content-encoding": "gzip" });
+    }
+    send(res, 200, data, headers);
   } catch (e) {
     // Unknown path inside a single-page app: hand back the app itself.
     if (!path.extname(rel)) {
