@@ -41,7 +41,13 @@ async function sweep(dir, userId, options = {}) {
 
   let ids = [];
   try {
-    ids = await google.listMessages(dir, userId, { label, max });
+    /* Three-minute passes only need what's arrived since the last one,
+       so Gmail is asked for recent mail rather than the whole label. */
+    const last = feed.stats && feed.stats.lastRun;
+    const recent = last && Date.now() - last < 36 * 3600e3
+      ? "newer_than:" + Math.max(1, Math.ceil((Date.now() - last) / 864e5)) + "d"
+      : "";
+    ids = await google.listMessages(dir, userId, { label, query: recent, max });
   } catch (e) {
     feed.log = [{ at: Date.now(), error: String(e && e.message || e) }, ...(feed.log || [])].slice(0, 50);
     writeFeed(dir, userId, feed);

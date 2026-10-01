@@ -22,11 +22,27 @@ function findDue(text) {
   return null;
 }
 
+/* Amounts hide in the subject as often as the body:
+ *   "Re: Payment Request : Fiesta wireless (Invoice # 22 ) - $43,610.00"
+ * A labelled total wins. Otherwise take the largest figure, because an
+ * invoice's total is nearly always bigger than the odds and ends around
+ * it — picking the first number found gave $217 for a $43,610 invoice.
+ */
 function findAmount(text) {
-  const t = text.match(/\bTotal\s*\$?\s*([\d,]+\.\d{2})/i)
-         || text.match(/\bAmount due\s*\$?\s*([\d,]+\.\d{2})/i)
-         || text.match(/\bBalance\s*\$?\s*([\d,]+\.\d{2})/i);
-  return t ? money(t[1]) : null;
+  const labelled = text.match(/\b(?:Total due|Amount due|Balance due|Total|Amount|Balance)\b[^\d$]{0,12}\$?\s*([\d,]+\.\d{2})/i);
+  if (labelled) {
+    const n = money(labelled[1]);
+    if (n && n >= 1) return n;
+  }
+  const all = [];
+  const re = /\$\s*([\d,]+(?:\.\d{2})?)/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const n = money(m[1]);
+    if (n && n >= 1) all.push(n);
+  }
+  if (!all.length) return null;
+  return Math.max(...all);
 }
 
 function findRef(text) {
@@ -39,44 +55,94 @@ function findRef(text) {
    match an email from mobilesentrix.com just because both say "mobile". */
 const WEAK = new Set(["mobile", "via", "inc", "llc", "ltd", "corp", "the", "and",
   "wireless", "electronics", "electronic", "resale", "trading", "group", "company",
-  "solutions", "services", "direct", "supply", "wholesale", "phone", "phones", "tech"]);
+  "solutions", "services", "direct", "supply", "wholesale", "phone", "phones", "tech",
+  "dept", "department", "team", "order", "orders", "invoice", "payment", "request"]);
 
-/* Who it's from, preferring a supplier you already know.
+/* Free mailboxes are not companies. "Pay Gmail" is nonsense; the person's
+   own name is the only sensible answer. */
+const FREEMAIL = new Set(["gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.uk",
+  "hotmail.com", "outlook.com", "live.com", "aol.com", "icloud.com", "me.com",
+  "protonmail.com", "proton.me", "msn.com", "ymail.com"]);
+
+const displayNameOf = (from) => {
+  const m = String(from || "").match(/^\s*"?([^"<]+?)"?\s*</);
+  if (m && m[1].trim()) return m[1].trim();
+  const addr = (String(from || "").match(/[\w.+-]+@/) || [""])[0].replace("@", "");
+  return addr.replace(/[._]/g, " ").trim() || "Unknown";
+};
+
+/* Who the money is owed to.
  *
- * Matching is deliberately strict: the whole name, or a distinctive word
- * from it, or an address you've recorded against that supplier. A loose
- * match here would file one supplier's invoice under another, which is
- * worse than not recognising them at all. */
-function findParty(email, known, aliases) {
+ * In order: an address you've recorded, a supplier named in the text, a
+ * company name in the document, then the sender's own name. Never your
+ * own company, and never a webmail provider. */
+function findParty(email, known, aliases, ownNames) {
   const from = (email.from || "").toLowerCase();
   const domain = (from.match(/@([\w.-]+)/) || [])[1] || "";
   const hay = (email.subject + " " + email.body + " " + (email.attachmentText || "")).toLowerCase();
+  const mine = (ownNames || []).map((x) => x.toLowerCase());
+  const isMine = (name) => mine.some((o) => name.toLowerCase().includes(o));
 
-  // Addresses or domains you've tied to a supplier win outright.
   for (const [name, addrs] of Object.entries(aliases || {})) {
-    if ((addrs || []).some((a) => from.includes(a.toLowerCase()) || domain === a.toLowerCase().replace(/^@/, "")))
+    if ((addrs || []).some((a) => from.includes(a.toLowerCase())
+        || domain === a.toLowerCase().replace(/^@/, "")))
       return { name, known: true, how: "the sender address is on file for them" };
   }
 
-  for (const s of known || []) {
-    const lower = s.toLowerCase();
+  for (const s2 of known || []) {
+    if (isMine(s2)) continue;
+    const lower = s2.toLowerCase();
     if (hay.includes(lower) || from.includes(lower.replace(/\s+/g, "")))
-      return { name: s, known: true, how: "their full name appears" };
+      return { name: s2, known: true, how: "their name appears in the message" };
   }
-  for (const s of known || []) {
-    const strong = (s.match(/[A-Za-z&]{3,}/g) || [])
+  for (const s2 of known || []) {
+    if (isMine(s2)) continue;
+    const strong = (s2.match(/[A-Za-z&]{3,}/g) || [])
       .map((w) => w.toLowerCase()).filter((w) => !WEAK.has(w));
     if (strong.length && strong.some((w) => from.includes(w) || hay.includes(w)))
-      return { name: s, known: true, how: "a distinctive part of their name appears" };
+      return { name: s2, known: true, how: "a distinctive part of their name appears" };
   }
 
-  const all = email.body + "\n" + (email.attachmentText || "");
-  const org = all.match(/^\s*([A-Z][A-Za-z&.' ]{2,40}(?:Inc|LLC|Ltd|Corp|Co)\.?)\s*$/m);
-  if (org) return { name: org[1].trim().replace(/\s+/g, " "), known: false, how: "a company name in the document" };
+  /* Your mail names the payee in the subject far more often than not:
+       "Payment Request : Fiesta wireless (Invoice # 22 )"
+       "RJOR SERVICES LLC - Invoice # 1 Payment $7,605.00"
+       "Re: Your Mannapov Order # 70514"
+     Reading it there is much safer than guessing from the sender, who is
+     usually one of your own people forwarding it. */
+  const subject = String(email.subject || "").replace(/^\s*(re|fw|fwd)\s*:\s*/i, "");
+  const shapes = [
+    /payment\s*request\s*[:\-]\s*([^(\[\n]{2,48}?)\s*(?:\(|\[|-\s*\$|invoice|$)/i,
+    /^([A-Za-z][\w&.' -]{2,46}?)\s*[-–]\s*invoice\b/i,
+    /\byour\s+([A-Za-z][\w&.' -]{2,40}?)\s+order\b/i,
+    /\binvoice\s+(?:from|for)\s+([A-Za-z][\w&.' -]{2,46}?)\s*(?:[-–(]|$)/i,
+  ];
+  for (const re of shapes) {
+    const m = subject.match(re);
+    if (m) {
+      const name = m[1].replace(/\s+/g, " ").trim().replace(/[,.]$/, "");
+      if (name.length > 2 && !isMine(name) && !/^(invoice|payment|order|request)$/i.test(name)) {
+        return { name, known: false, how: "the name in the subject line" };
+      }
+    }
+  }
 
+  /* A company name in the subject, like "RJOR SERVICES LLC - Invoice # 1". */
+  const subj = String(email.subject || "")
+    .match(/\b([A-Z][A-Za-z&.']{1,}(?:\s+[A-Z][A-Za-z&.']{1,}){0,3}\s+(?:LLC|INC|LTD|CORP|CO)\.?)/);
+  if (subj && !isMine(subj[1])) return { name: subj[1].trim(), known: false, how: "the company named in the subject" };
+
+  const all = (email.body || "") + "\n" + (email.attachmentText || "");
+  const org = all.match(/^\s*([A-Z][A-Za-z&.' ]{2,40}(?:Inc|LLC|Ltd|Corp|Co)\.?)\s*$/m);
+  if (org && !isMine(org[1])) return { name: org[1].trim().replace(/\s+/g, " "), known: false, how: "a company name in the document" };
+
+  if (FREEMAIL.has(domain) || isMine(domain)) {
+    return { name: displayNameOf(email.from), known: false, how: "the sender's own name", person: true };
+  }
   const base = domain.split(".")[0];
-  return { name: base ? base.charAt(0).toUpperCase() + base.slice(1) : "Unknown",
-           known: false, how: "taken from the sender's domain" };
+  if (base && !isMine(base)) {
+    return { name: base.charAt(0).toUpperCase() + base.slice(1), known: false, how: "the sender's domain" };
+  }
+  return { name: displayNameOf(email.from), known: false, how: "the sender's own name", person: true };
 }
 
 const RULES = [
@@ -106,7 +172,23 @@ function classify(email) {
   return { ...scored[0], confidence: clear ? Math.min(1, 0.6 + scored[0].hits * 0.15) : 0.5 };
 }
 
+/* Mail that should never become a task. Checked first, so none of the
+   rest of this runs on a bid notification or a newsletter. */
+function muted(email, opts) {
+  const from = String(email.from || "").toLowerCase();
+  const subject = String(email.subject || "").toLowerCase();
+  for (const rule of (opts.mute || [])) {
+    const r = String(rule).toLowerCase().trim();
+    if (!r) continue;
+    if (r.startsWith("subject:")) { if (subject.includes(r.slice(8).trim())) return r; }
+    else if (from.includes(r)) return r;
+  }
+  return null;
+}
+
 function propose(email, opts = {}) {
+  const hush = muted(email, opts);
+  if (hush) return { classified: "muted", party: "", who: null, tasks: [], muted: hush };
   const today = opts.today || new Date().toISOString().slice(0, 10);
   const known = opts.knownSuppliers || [];
   const text = `${email.subject}\n${email.body}\n${email.attachmentText || ""}`;
@@ -121,6 +203,7 @@ function propose(email, opts = {}) {
   /* Mail from your own domain is a colleague, not a supplier. If they've
      forwarded someone's invoice, the money is owed to that someone — so
      look past the sender and find the supplier in the message itself. */
+  const ownNames = opts.ownNames || ["mobilesentrix", "apt-ability"];
   const internal = (opts.ownDomains || []).some((d) => (email.from || "").toLowerCase().includes(d.toLowerCase()));
   const displayName = (who && who.name)
     || (String(email.from || "").match(/^\s*"?([^"<]+?)"?\s*</) || [])[1]
@@ -128,12 +211,16 @@ function propose(email, opts = {}) {
 
   let party;
   if (internal) {
-    const inside = findParty({ ...email, from: "" }, known, opts.supplierAddresses);
-    party = inside.known
+    /* Look past the sender. If the message names a company — in the
+       subject, in the document, anywhere — that's who the money is for,
+       whether or not you've dealt with them before. Only when all it
+       finds is a person do we treat it as a colleague's own message. */
+    const inside = findParty({ ...email, from: "" }, known, opts.supplierAddresses, ownNames);
+    party = (!inside.person && inside.name && !ownNames.some((o) => inside.name.toLowerCase().includes(o)))
       ? { ...inside, forwardedBy: displayName }
       : { name: displayName.trim(), known: false, how: "one of your own people", colleague: true };
   } else {
-    party = findParty(email, known, opts.supplierAddresses);
+    party = findParty(email, known, opts.supplierAddresses, ownNames);
   }
   const out = [];
 
@@ -146,12 +233,16 @@ function propose(email, opts = {}) {
   /* A colleague's message is something to do, not something to pay —
      unless they've forwarded an invoice with a supplier and a total on it. */
   const urgent = /\basap\b|\burgent\b|\btoday\b|\bby friday\b|\bnow\b/i.test(email.subject + " " + email.body);
-  const forwardedInvoice = internal && party.known && findAmount(text);
+  /* A colleague forwarding an invoice is still an invoice, as long as we
+     can see who it's actually for and how much. */
+  const amountHere = findAmount(text);
+  const forwardedInvoice = internal && amountHere && !party.colleague
+    && party.name && party.name.toLowerCase() !== displayName.toLowerCase();
 
   if (internal && !forwardedInvoice) {
     out.push({
       kind: "internal",
-      title: `${displayName.trim()} — ${email.subject.slice(0, 60)}`,
+      title: `${displayName.trim()} — ${email.subject.replace(/^\s*(re|fw|fwd)\s*:\s*/i, "").slice(0, 48)}`,
       space: "company",
       category: (who && who.category) || "Team & Management",
       date: shift(email.date || today, urgent ? 0 : 1),
@@ -167,7 +258,7 @@ function propose(email, opts = {}) {
   /* With a colleague handled, don't also make a payment task for them. */
   if (internal && !forwardedInvoice) return { classified: "internal", party: party.name, who, tasks: out };
 
-  if (c.kind === "payment") {
+  if (c.kind === "payment" || forwardedInvoice) {
     const amount = findAmount(text);
     const ref = findRef(text);
     const due = findDue(text);
@@ -242,4 +333,4 @@ function propose(email, opts = {}) {
   return { classified: c.kind, party: party.name, who, tasks: out };
 }
 
-module.exports = { propose, classify, findDue, findAmount, findRef };
+module.exports = { propose, classify, findDue, findAmount, findRef, muted, FREEMAIL };

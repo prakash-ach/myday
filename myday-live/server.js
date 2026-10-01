@@ -20,6 +20,14 @@ const google = require("./lib/google");
 const { readDocument } = require("./lib/documents");
 const watcher = require("./lib/watcher");
 
+/* Senders that should never become a task. Overridable per account. */
+const DEFAULT_MUTE = [
+  "sales@mobilesentrix.com",
+  "bstock.com", "b-stock.com", "b-stock",
+  "subject:auction bid", "subject:you have been outbid", "subject:engagement",
+  "noreply@", "no-reply@", "donotreply@",
+];
+
 const PORT = Number(process.env.APP_PORT || process.env.PORT || 8080);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const SESSIONS = path.join(DATA_DIR, "sessions.json");
@@ -485,7 +493,10 @@ const server = http.createServer(async (req, res) => {
         today: new Date().toISOString().slice(0, 10),
         knownSuppliers: Array.isArray(b.knownSuppliers) ? b.knownSuppliers : [],
         supplierAddresses: b.supplierAddresses || {},
-        ownDomains: Array.isArray(b.ownDomains) ? b.ownDomains : [],
+        ownDomains: Array.isArray(b.ownDomains) ? b.ownDomains : ["mobilesentrix.com"],
+        ownNames: b.ownNames || ["mobilesentrix", "apt-ability"],
+        people: b.people || {},
+        mute: b.mute || DEFAULT_MUTE,
       });
 
       /* If it smells like an O&M invoice, pull the line items out too. */
@@ -721,8 +732,10 @@ const server = http.createServer(async (req, res) => {
         label: b.label || "", max: Math.min(30, b.max || 20),
         knownSuppliers: b.knownSuppliers || [],
         supplierAddresses: b.supplierAddresses || {},
-        ownDomains: b.ownDomains || [],
+        ownDomains: b.ownDomains || ["mobilesentrix.com"],
+        ownNames: b.ownNames || ["mobilesentrix", "apt-ability"],
         people: b.people || {},
+        mute: b.mute || DEFAULT_MUTE,
       });
       return json(res, 200, r);
     } catch (e) {
@@ -760,7 +773,7 @@ setInterval(() => {
 
 /* Keep reading in the background, whether anyone is looking or not. */
 watcher.start(DATA_DIR, {
-  everyMinutes: Number(process.env.WATCH_MINUTES || 10),
+  everyMinutes: Number(process.env.WATCH_MINUTES || 3),
   usersFile, readJson,
   settingsFor: (u) => {
     const stored = readJson(stateFile(u.id, "myday_automation"));
@@ -773,8 +786,10 @@ watcher.start(DATA_DIR, {
       paused: !!cfg.paused,
       knownSuppliers: cfg.knownSuppliers || [],
       supplierAddresses: cfg.supplierAddresses || {},
-      ownDomains: cfg.ownDomains || [],
+      ownDomains: cfg.ownDomains || ["mobilesentrix.com"],
+      ownNames: cfg.ownNames || ["mobilesentrix", "apt-ability"],
       people: cfg.people || {},
+      mute: cfg.mute || DEFAULT_MUTE,
     };
   },
 });
