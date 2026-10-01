@@ -17,6 +17,7 @@ const { DATA_DIR, usersFile, stateFile, readJson, writeJson, verifyPassword } = 
 const { propose } = require("./lib/propose");
 const { parseOnmInvoice } = require("./lib/extract-onm");
 const google = require("./lib/google");
+const { readDocument } = require("./lib/documents");
 
 const PORT = Number(process.env.APP_PORT || process.env.PORT || 8080);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -611,6 +612,82 @@ const server = http.createServer(async (req, res) => {
       const t = google.readTokens(DATA_DIR, me.id);
       if (t) google.writeTokens(DATA_DIR, me.id, { ...t, lastSync: Date.now(), label });
       return json(res, 200, { messages: out });
+    } catch (e) {
+      return json(res, 400, { error: String(e && e.message || e) });
+    }
+  }
+
+  /* ---------------- scan the mailbox ----------------
+   * Finds mail with attachments, downloads the PDFs and spreadsheets,
+   * reads them, and returns what it found. Saves nothing: everything
+   * comes back for you to approve.
+   */
+  if (p === "/api/automation/scan" && req.method === "POST") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { b = {}; }
+
+    const label = String(b.label || "");
+    const max = Math.min(15, Number(b.max || 8));
+    const seen = new Set(Array.isArray(b.seen) ? b.seen : []);   // fingerprints already imported
+    const known = Array.isArray(b.knownSuppliers) ? b.knownSuppliers : [];
+
+    try {
+      const ids = await google.listMessages(DATA_DIR, me.id,
+        { label, query: "has:attachment", max });
+
+      const found = [];
+      const problems = [];
+      for (const { id } of ids.slice(0, max)) {
+        let msg;
+        try { msg = await google.getMessage(DATA_DIR, me.id, id); }
+        catch (e) { problems.push({ id, error: String(e && e.message) }); continue; }
+
+        const docs = [];
+        for (const att of (msg.attachments || [])) {
+          if (!att.attachmentId) continue;
+          if (att.size > 12 * 1024 * 1024) {
+            problems.push({ subject: msg.subject, error: `${att.filename} is too big to read` });
+            continue;
+          }
+          try {
+            const buf = await google.getAttachment(DATA_DIR, me.id, id, att.attachmentId);
+            const doc = readDocument(att.filename, att.mimeType, buf);
+            doc.alreadyImported = seen.has(doc.sha);
+            delete doc.text;                      // keep the response small
+            docs.push(doc);
+          } catch (e) {
+            problems.push({ subject: msg.subject, error: `${att.filename}: ${String(e && e.message)}` });
+          }
+        }
+
+        const tasks = propose({
+          from: msg.from, subject: msg.subject, body: msg.body, date: msg.date,
+          attachmentText: "",
+        }, {
+          today: new Date().toISOString().slice(0, 10),
+          knownSuppliers: known,
+          supplierAddresses: b.supplierAddresses || {},
+          ownDomains: Array.isArray(b.ownDomains) ? b.ownDomains : [],
+        });
+
+        found.push({
+          id: msg.id, from: msg.from, subject: msg.subject, date: msg.date,
+          snippet: msg.snippet, documents: docs,
+          tasks: tasks.tasks, classified: tasks.classified, party: tasks.party,
+        });
+      }
+
+      const t = google.readTokens(DATA_DIR, me.id);
+      if (t) google.writeTokens(DATA_DIR, me.id, { ...t, lastSync: Date.now(), label });
+
+      return json(res, 200, {
+        scanned: found.length,
+        withDocuments: found.filter((f) => f.documents.length).length,
+        rowsFound: found.reduce((n, f) => n + f.documents.reduce((m, d) => m + (d.rows ? d.rows.length : 0), 0), 0),
+        messages: found, problems,
+      });
     } catch (e) {
       return json(res, 400, { error: String(e && e.message || e) });
     }

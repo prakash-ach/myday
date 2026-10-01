@@ -21,6 +21,27 @@ die()  { printf '\n\033[1;31mStopped:\033[0m %s\n' "$1" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "Run as root."
 [ -f "$SRC/server.js" ] || die "Run this from the folder holding server.js."
 
+# Check the upload is complete BEFORE changing anything. A half-uploaded
+# folder that takes the site down is worse than an update that refuses
+# to start.
+say "Checking the upload"
+MISSING=""
+for f in server.js store.js manage.js public/index.html public/app.js \
+         lib/google.js lib/propose.js lib/extract-onm.js; do
+  [ -f "$SRC/$f" ] || MISSING="$MISSING $f"
+done
+if [ -n "$MISSING" ]; then
+  echo
+  echo "    These didn't make it into the upload:"
+  for f in $MISSING; do echo "        $f"; done
+  echo
+  echo "    Nothing has been changed and your site is still running."
+  echo "    Upload the missing files to GitHub, then: cd /opt/src && git pull && bash myday-live/setup.sh"
+  die "incomplete upload"
+fi
+node --check "$SRC/server.js" >/dev/null 2>&1 || die "server.js is damaged. Nothing was changed."
+ok "every file is here and the server file is sound"
+
 export DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------- swap
@@ -35,10 +56,14 @@ else
 fi
 
 # ---------------------------------------------------------------- node
+say "Reading PDFs"
+if ! command -v pdftotext >/dev/null; then apt-get update -qq && apt-get install -y -qq poppler-utils; fi
+command -v pdftotext >/dev/null && ok "pdftotext ready" || echo "    pdftotext missing; PDFs won't be read"
+
 say "Node"
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 18 ]; then
   apt-get update -qq
-  apt-get install -y -qq curl ca-certificates
+  apt-get install -y -qq curl ca-certificates poppler-utils
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1
   apt-get install -y -qq nodejs
 fi
@@ -69,11 +94,16 @@ OTHERS="$(ls /etc/nginx/sites-enabled 2>/dev/null | tr '\n' ' ')"
 say "App files"
 mkdir -p "$APP_DIR" "$DATA_DIR"
 if [ "$SRC" != "$APP_DIR" ]; then
-  mkdir -p "$APP_DIR/public"
+  mkdir -p "$APP_DIR/public" "$APP_DIR/lib"
   install -m 644 "$SRC/server.js" "$SRC/store.js" "$SRC/manage.js" "$APP_DIR/"
   cp -r "$SRC/public/." "$APP_DIR/public/"
+  cp -r "$SRC/lib/." "$APP_DIR/lib/"
   install -m 755 "$SRC/setup.sh" "$APP_DIR/setup.sh" 2>/dev/null || true
+  install -m 755 "$SRC/backup.sh" "$SRC/restore.sh" "$APP_DIR/" 2>/dev/null || true
 fi
+
+# Prove it can actually start before letting systemd have it.
+node --check "$APP_DIR/server.js" || die "the server file is damaged; nothing was restarted"
 chmod 700 "$DATA_DIR"
 ok "installed to $APP_DIR"
 
@@ -105,7 +135,14 @@ systemctl daemon-reload
 systemctl enable --quiet myday
 systemctl restart myday
 sleep 2
-systemctl is-active --quiet myday || { journalctl -u myday -n 20 --no-pager; die "The service didn't start."; }
+if ! systemctl is-active --quiet myday; then
+  journalctl -u myday -n 20 --no-pager
+  echo
+  echo "    The new version won't start. To go back to the one that worked:"
+  echo "        cd /opt/src && git checkout HEAD~1 && bash myday-live/setup.sh"
+  echo "    Your data is untouched — it lives in $DATA_DIR."
+  die "The service didn't start."
+fi
 ok "running on 127.0.0.1:$PORT"
 
 # ---------------------------------------------------------------- firewall
