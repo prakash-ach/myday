@@ -18,6 +18,7 @@ const { propose } = require("./lib/propose");
 const { parseOnmInvoice } = require("./lib/extract-onm");
 const google = require("./lib/google");
 const { readDocument } = require("./lib/documents");
+const watcher = require("./lib/watcher");
 
 const PORT = Number(process.env.APP_PORT || process.env.PORT || 8080);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -693,6 +694,58 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  /* What the watcher has found, waiting for you. */
+  if (p === "/api/automation/feed" && req.method === "GET") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const feed = watcher.readFeed(DATA_DIR, me.id);
+    const open = (feed.items || []).filter((x) => !x.decided);
+    return json(res, 200, {
+      items: open.slice(0, 60),
+      handled: (feed.items || []).length - open.length,
+      stats: feed.stats || {},
+      log: (feed.log || []).slice(0, 12),
+      watching: !!google.readTokens(DATA_DIR, me.id),
+    });
+  }
+
+  /* Run a pass right now rather than waiting for the next one. */
+  if (p === "/api/automation/sweep" && req.method === "POST") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { b = {}; }
+    try {
+      const r = await watcher.sweep(DATA_DIR, me.id, {
+        label: b.label || "", max: Math.min(30, b.max || 20),
+        knownSuppliers: b.knownSuppliers || [],
+        supplierAddresses: b.supplierAddresses || {},
+        ownDomains: b.ownDomains || [],
+        people: b.people || {},
+      });
+      return json(res, 200, r);
+    } catch (e) {
+      return json(res, 400, { error: String(e && e.message || e) });
+    }
+  }
+
+  /* Approve or ignore something in the feed. */
+  if (p === "/api/automation/decide" && req.method === "POST") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const feed = watcher.readFeed(DATA_DIR, me.id);
+    const ids = new Set(Array.isArray(b.ids) ? b.ids : [b.id]);
+    let n = 0;
+    (feed.items || []).forEach((x) => {
+      if (ids.has(x.id) && !x.decided) { x.decided = b.decision || "handled"; x.decidedAt = Date.now(); n++; }
+    });
+    watcher.writeFeed(DATA_DIR, me.id, feed);
+    return json(res, 200, { updated: n });
+  }
+
   if (p === "/api/health") return json(res, 200, { ok: true, accounts: (readJson(usersFile()) || { users: [] }).users.length });
 
   if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "Method not allowed");
@@ -704,6 +757,27 @@ setInterval(() => {
   sessions.forEach((s, t) => { if (s.expires < now) { sessions.delete(t); changed = true; } });
   if (changed) saveSessions();
 }, 36e5).unref();
+
+/* Keep reading in the background, whether anyone is looking or not. */
+watcher.start(DATA_DIR, {
+  everyMinutes: Number(process.env.WATCH_MINUTES || 10),
+  usersFile, readJson,
+  settingsFor: (u) => {
+    const stored = readJson(stateFile(u.id, "myday_automation"));
+    let cfg = {};
+    try { cfg = stored && stored.value ? JSON.parse(stored.value) : {}; } catch (e) {}
+    const t = google.readTokens(DATA_DIR, u.id);
+    return {
+      label: (t && t.label) || cfg.label || "",
+      max: 20,
+      paused: !!cfg.paused,
+      knownSuppliers: cfg.knownSuppliers || [],
+      supplierAddresses: cfg.supplierAddresses || {},
+      ownDomains: cfg.ownDomains || [],
+      people: cfg.people || {},
+    };
+  },
+});
 
 server.listen(PORT, "127.0.0.1", () => {
   const n = (readJson(usersFile()) || { users: [] }).users.length;

@@ -111,11 +111,30 @@ function propose(email, opts = {}) {
   const known = opts.knownSuppliers || [];
   const text = `${email.subject}\n${email.body}\n${email.attachmentText || ""}`;
   const c = classify({ subject: email.subject, body: text });
-  // Mail from your own domain isn't from a supplier.
+  /* People you work with, by address. Someone in finance sending an
+     invoice means something different from a stranger sending one. */
+  const people = opts.people || {};
+  const fromAddr = (String(email.from || "").match(/[\w.+-]+@[\w.-]+/) || [""])[0].toLowerCase();
+  const person = Object.entries(people).find(([addr]) => addr.toLowerCase() === fromAddr);
+  const who = person ? { address: person[0], ...person[1] } : null;
+
+  /* Mail from your own domain is a colleague, not a supplier. If they've
+     forwarded someone's invoice, the money is owed to that someone — so
+     look past the sender and find the supplier in the message itself. */
   const internal = (opts.ownDomains || []).some((d) => (email.from || "").toLowerCase().includes(d.toLowerCase()));
-  const party = internal
-    ? { name: (email.from.split("@")[0] || "a colleague").replace(/[._]/g, " "), known: false, how: "one of your own addresses" }
-    : findParty(email, known, opts.supplierAddresses);
+  const displayName = (who && who.name)
+    || (String(email.from || "").match(/^\s*"?([^"<]+?)"?\s*</) || [])[1]
+    || (fromAddr.split("@")[0] || "a colleague").replace(/[._]/g, " ");
+
+  let party;
+  if (internal) {
+    const inside = findParty({ ...email, from: "" }, known, opts.supplierAddresses);
+    party = inside.known
+      ? { ...inside, forwardedBy: displayName }
+      : { name: displayName.trim(), known: false, how: "one of your own people", colleague: true };
+  } else {
+    party = findParty(email, known, opts.supplierAddresses);
+  }
   const out = [];
 
   const shift = (base, days) => {
@@ -123,6 +142,30 @@ function propose(email, opts = {}) {
     d.setDate(d.getDate() + days);
     return d.toISOString().slice(0, 10);
   };
+
+  /* A colleague's message is something to do, not something to pay —
+     unless they've forwarded an invoice with a supplier and a total on it. */
+  const urgent = /\basap\b|\burgent\b|\btoday\b|\bby friday\b|\bnow\b/i.test(email.subject + " " + email.body);
+  const forwardedInvoice = internal && party.known && findAmount(text);
+
+  if (internal && !forwardedInvoice) {
+    out.push({
+      kind: "internal",
+      title: `${displayName.trim()} — ${email.subject.slice(0, 60)}`,
+      space: "company",
+      category: (who && who.category) || "Team & Management",
+      date: shift(email.date || today, urgent ? 0 : 1),
+      priority: urgent ? "urgent" : "high",
+      note: `From: ${displayName.trim()}${who && who.role ? ` (${who.role})` : ""}\n\n${email.body.slice(0, 400)}`,
+      confidence: who ? 0.8 : 0.55,
+      why: who
+        ? `${who.name} handles ${who.role}, and this reads like it needs you`
+        : "from one of your own addresses and reads like it needs an answer",
+    });
+  }
+
+  /* With a colleague handled, don't also make a payment task for them. */
+  if (internal && !forwardedInvoice) return { classified: "internal", party: party.name, who, tasks: out };
 
   if (c.kind === "payment") {
     const amount = findAmount(text);
@@ -135,16 +178,21 @@ function propose(email, opts = {}) {
       title: `Pay ${party.name}${ref ? ` — invoice ${ref}` : ""}${amount ? ` — $${amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}` : ""}`,
       space: "company", category: "Accounting & Reconciliation",
       date, priority: big ? "urgent" : "high",
-      note: [`From: ${email.from}`, `Subject: ${email.subject}`,
+      note: [`From: ${email.from}`,
+             party.forwardedBy ? `Forwarded by ${party.forwardedBy}` : null,
+             `Subject: ${email.subject}`,
              amount ? `Amount: $${amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}` : null,
              ref ? `Reference: ${ref}` : null,
              due && due.why ? `Due date from ${due.why}.` : "No due date found, so a week was assumed."]
             .filter(Boolean).join("\n"),
       amount, reference: ref,
-      confidence: Math.min(1, (amount ? 0.4 : 0.2) + (due ? 0.4 : 0.1) + (party.known ? 0.2 : 0.1)),
+      forPerson: who && /finance|account|book/i.test(who.role || "") ? (who.name || null) : null,
+      confidence: Math.min(1, (amount ? 0.4 : 0.2) + (due ? 0.4 : 0.1)
+        + (party.known ? 0.2 : 0.1) + (who ? 0.1 : 0)),
       why: [amount ? `found a total of $${amount.toLocaleString()}` : "no total found",
             due ? due.why : "no due date found",
-            party.known ? `${party.name} matched because ${party.how}` : `read as ${party.name} from ${party.how}`].join("; "),
+            party.known ? `${party.name} matched because ${party.how}` : `read as ${party.name} from ${party.how}`,
+            party.forwardedBy ? `forwarded by ${party.forwardedBy}` : null].filter(Boolean).join("; "),
     });
   }
 
@@ -191,7 +239,7 @@ function propose(email, opts = {}) {
     });
   }
 
-  return { classified: c.kind, party: party.name, tasks: out };
+  return { classified: c.kind, party: party.name, who, tasks: out };
 }
 
 module.exports = { propose, classify, findDue, findAmount, findRef };
