@@ -23,6 +23,7 @@ const watcher = require("./lib/watcher");
 /* Senders that should never become a task. Overridable per account. */
 const DEFAULT_MUTE = [
   "sales@mobilesentrix.com",
+  "konok@mobilesentrix.com",
   "bstock.com", "b-stock.com", "b-stock",
   "subject:auction bid", "subject:you have been outbid", "subject:engagement",
   "noreply@", "no-reply@", "donotreply@",
