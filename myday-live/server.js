@@ -14,6 +14,9 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { DATA_DIR, usersFile, stateFile, readJson, writeJson, verifyPassword } = require("./store");
+const { propose } = require("./lib/propose");
+const { parseOnmInvoice } = require("./lib/extract-onm");
+const google = require("./lib/google");
 
 const PORT = Number(process.env.APP_PORT || process.env.PORT || 8080);
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -56,6 +59,9 @@ function sessionFor(req) {
 const cookie = (token, maxAge) =>
   ["sid=" + encodeURIComponent(token), "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=" + maxAge]
     .concat(SECURE ? ["Secure"] : []).join("; ");
+
+/* One-shot values for the Google sign-in round trip. */
+const oauthStates = new Map();
 
 /* ---------------- throttle ---------------- */
 const attempts = new Map();
@@ -134,7 +140,7 @@ async function serveStatic(req, res, urlPath) {
  * user cannot grant themselves anything by editing their own browser.
  */
 const ALL_SECTIONS = ["dashboard", "today", "tasks", "calendar", "projects",
-  "auctions", "development", "notes", "goals", "habits", "settings"];
+  "auctions", "automation", "development", "notes", "goals", "habits", "settings"];
 const STARTER_SECTIONS = ["dashboard", "today", "tasks", "calendar", "notes", "settings"];
 
 function readTeam() {
@@ -417,6 +423,197 @@ const server = http.createServer(async (req, res) => {
     store.items = store.items.filter((x) => x.id !== id);
     writeJson(SHARED, store, true);
     return json(res, 200, { deleted: true });
+  }
+
+  /* Everything you have, as one file you can keep anywhere. */
+  if (p === "/api/export" && req.method === "GET") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const out = { app: "myday", version: 1, exportedAt: new Date().toISOString(),
+      username: me.username, keys: {} };
+    try {
+      fs.readdirSync(DATA_DIR)
+        .filter((f) => f.startsWith("state-" + me.id + "-") && f.endsWith(".json"))
+        .forEach((f) => {
+          const stored = readJson(path.join(DATA_DIR, f));
+          if (stored && stored.key) out.keys[stored.key] = stored.value;
+        });
+    } catch (e) {}
+    return send(res, 200, JSON.stringify(out), {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="myday-${me.username}-${new Date().toISOString().slice(0,10)}.json"`,
+    });
+  }
+
+  /* Put one of those files back. The current data is snapshotted first. */
+  if (p === "/api/import" && req.method === "POST") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "that file isn't readable" }); }
+    if (!b || b.app !== "myday" || !b.keys) return json(res, 400, { error: "that isn't a MYDAY export" });
+    let n = 0;
+    Object.keys(b.keys).forEach((k) => {
+      if (typeof b.keys[k] !== "string") return;
+      writeJson(stateFile(me.id, k), { key: k, value: b.keys[k], at: Date.now() }, true);
+      n++;
+    });
+    return json(res, 200, { restored: n });
+  }
+
+  /* ---------------- automation ----------------
+   * Give it an email and it proposes tasks. It saves nothing: the
+   * proposals go to the Automation Inbox for you to approve. The same
+   * code will run against Gmail once that's connected.
+   */
+  if (p === "/api/automation/preview" && req.method === "POST") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+
+    const email = {
+      from: String(b.from || ""), subject: String(b.subject || ""),
+      body: String(b.body || ""), date: String(b.date || "").slice(0, 10),
+      attachmentText: String(b.attachmentText || ""),
+    };
+    try {
+      const r = propose(email, {
+        today: new Date().toISOString().slice(0, 10),
+        knownSuppliers: Array.isArray(b.knownSuppliers) ? b.knownSuppliers : [],
+        supplierAddresses: b.supplierAddresses || {},
+        ownDomains: Array.isArray(b.ownDomains) ? b.ownDomains : [],
+      });
+
+      /* If it smells like an O&M invoice, pull the line items out too. */
+      let auction = null;
+      const text = email.attachmentText || email.body;
+      if (/Invoice no\.?:/i.test(text) && /Cell Phone/i.test(text)) {
+        const parsed = parseOnmInvoice(text);
+        if (parsed.rows.length) auction = parsed;
+      }
+      return json(res, 200, { ...r, auction });
+    } catch (e) {
+      return json(res, 500, { error: "couldn't read that", detail: String(e && e.message) });
+    }
+  }
+
+  /* ---------------- connecting Gmail ----------------
+   * The secret stays on the server. The browser is told only whether a
+   * mailbox is connected and which address it is.
+   */
+  if (p === "/api/google/status" && req.method === "GET") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const configured = google.isConfigured();
+    const t = google.readTokens(DATA_DIR, me.id);
+    return json(res, 200, {
+      configured,
+      connected: !!(t && t.refresh_token),
+      email: t ? t.email || "" : "",
+      connectedAt: t ? t.connectedAt || null : null,
+      lastSync: t ? t.lastSync || null : null,
+      label: t ? t.label || "" : "",
+      redirectUri: google.redirectUri(),
+      hint: configured ? "" : "No client details on the server yet. Put them in /etc/myday/secrets.env.",
+    });
+  }
+
+  if (p === "/api/google/connect" && req.method === "GET") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (!google.isConfigured()) return json(res, 400, { error: "the server has no Google client details yet" });
+    // A one-shot state value, tied to this session, so nobody can replay the callback.
+    const st = google.newState();
+    oauthStates.set(st, { userId: me.id, at: Date.now() });
+    for (const [k, v] of oauthStates) if (Date.now() - v.at > 600000) oauthStates.delete(k);
+    return json(res, 200, { url: google.authUrl(st) });
+  }
+
+  if (p === "/api/google/callback" && req.method === "GET") {
+    const code = url.searchParams.get("code");
+    const st = url.searchParams.get("state");
+    const err = url.searchParams.get("error");
+    const page = (title, detail, good) => send(res, 200,
+      `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+       <title>${title}</title>
+       <body style="margin:0;background:#0E1116;color:#E9EDF3;font-family:ui-sans-serif,-apple-system,'Segoe UI',Roboto,sans-serif;
+         display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px">
+         <div style="max-width:420px;text-align:center">
+           <div style="font-size:40px">${good ? "✓" : "⚠"}</div>
+           <h1 style="font-size:20px;margin:10px 0 6px">${title}</h1>
+           <p style="font-size:14px;color:#8C97A8;line-height:1.7;margin:0 0 20px">${detail}</p>
+           <a href="/" style="display:inline-block;background:#2FBF87;color:#07130D;text-decoration:none;
+             padding:11px 20px;border-radius:10px;font-weight:700;font-size:14px">Back to MYDAY</a>
+         </div></body>`,
+      { "content-type": "text/html; charset=utf-8" });
+
+    if (err) return page("Gmail wasn't connected", "Google said: " + err.replace(/[<>]/g, ""), false);
+    if (!code || !st) return page("Something was missing", "Google didn't send back what was expected.", false);
+    const pending = oauthStates.get(st);
+    oauthStates.delete(st);
+    if (!pending) return page("That link has expired", "Start again from the Automation page.", false);
+
+    try {
+      const tok = await google.exchangeCode(code);
+      if (!tok.refresh_token) {
+        const old = google.readTokens(DATA_DIR, pending.userId);
+        if (old && old.refresh_token) tok.refresh_token = old.refresh_token;
+      }
+      if (!tok.refresh_token) {
+        return page("No lasting permission was given",
+          "Google didn't return a refresh token, so this would stop working within the hour. Try connecting again.", false);
+      }
+      google.writeTokens(DATA_DIR, pending.userId, {
+        refresh_token: tok.refresh_token,
+        access_token: tok.access_token,
+        expires_at: Date.now() + (tok.expires_in || 3600) * 1000,
+        connectedAt: Date.now(),
+      });
+      let who = "";
+      try {
+        const prof = await google.profile(DATA_DIR, pending.userId);
+        who = prof.emailAddress || "";
+        const t2 = google.readTokens(DATA_DIR, pending.userId);
+        google.writeTokens(DATA_DIR, pending.userId, { ...t2, email: who });
+      } catch (e) { /* the mailbox is connected even if the name lookup failed */ }
+      return page("Gmail connected", who ? `Reading ${who}, and only reading.` : "MYDAY can now read your mail.", true);
+    } catch (e) {
+      return page("Couldn't finish connecting", String(e && e.message || e).replace(/[<>]/g, ""), false);
+    }
+  }
+
+  if (p === "/api/google/disconnect" && req.method === "POST") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    google.forget(DATA_DIR, me.id);
+    return json(res, 200, { ok: true });
+  }
+
+  /* A look at what's in the mailbox, without saving anything. */
+  if (p === "/api/google/messages" && req.method === "GET") {
+    const s2 = sessionFor(req);
+    const me = userFromSession(s2);
+    if (!me) return json(res, 401, { error: "not signed in" });
+    try {
+      const label = url.searchParams.get("label") || "";
+      const max = Math.min(25, Number(url.searchParams.get("max") || 10));
+      const ids = await google.listMessages(DATA_DIR, me.id, { label, max });
+      const out = [];
+      for (const m of ids.slice(0, max)) {
+        try { out.push(await google.getMessage(DATA_DIR, me.id, m.id)); }
+        catch (e) { out.push({ id: m.id, error: String(e && e.message) }); }
+      }
+      const t = google.readTokens(DATA_DIR, me.id);
+      if (t) google.writeTokens(DATA_DIR, me.id, { ...t, lastSync: Date.now(), label });
+      return json(res, 200, { messages: out });
+    } catch (e) {
+      return json(res, 400, { error: String(e && e.message || e) });
+    }
   }
 
   if (p === "/api/health") return json(res, 200, { ok: true, accounts: (readJson(usersFile()) || { users: [] }).users.length });

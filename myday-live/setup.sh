@@ -87,6 +87,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$APP_DIR
+EnvironmentFile=-/etc/myday/secrets.env
 ExecStart=/usr/bin/node $APP_DIR/server.js
 Environment=APP_PORT=$PORT
 Environment=DATA_DIR=$DATA_DIR
@@ -212,6 +213,36 @@ APACHE
     add_to_caddy
     ;;
 esac
+
+# ---------------------------------------------------------------- secrets
+say "Secrets"
+mkdir -p /etc/myday
+chmod 700 /etc/myday
+if [ ! -f /etc/myday/secrets.env ]; then
+  cat > /etc/myday/secrets.env <<'SEC'
+# Google client details for reading Gmail. Fill these in from the
+# Google Cloud console, then: systemctl restart myday
+# GOOGLE_CLIENT_ID=
+# GOOGLE_CLIENT_SECRET=
+SEC
+  ok "created /etc/myday/secrets.env, waiting for your Google details"
+else
+  ok "/etc/myday/secrets.env already there, left alone"
+fi
+chmod 600 /etc/myday/secrets.env
+
+# ---------------------------------------------------------------- backups
+say "Backups"
+install -m 755 "$SRC/backup.sh" "$APP_DIR/backup.sh" 2>/dev/null || true
+install -m 755 "$SRC/restore.sh" "$APP_DIR/restore.sh" 2>/dev/null || true
+cat > /etc/cron.d/myday-backup <<CRON
+# A full archive every night at 03:15, thirty kept.
+15 3 * * * root DATA_DIR=$DATA_DIR /bin/bash $APP_DIR/backup.sh >/dev/null 2>&1
+CRON
+chmod 644 /etc/cron.d/myday-backup
+mkdir -p /var/backups/myday
+ok "nightly archive to /var/backups/myday, 30 kept"
+ok "restore with:  bash $APP_DIR/restore.sh"
 
 # ---------------------------------------------------------------- account
 say "Your account"
