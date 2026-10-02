@@ -35,6 +35,24 @@ async function sweep(dir, userId, options = {}) {
   const label = options.label || "";
   const max = options.max || 20;
 
+  /* A label that doesn't exist matches nothing, and Gmail gives no hint
+     that's why. Rather than read zero messages forever, check it once
+     and fall back to the whole inbox, saying so in the log. */
+  let useLabel = label;
+  let labelNote = null;
+  if (label) {
+    try {
+      const names = await google.listLabels(dir, userId);
+      const found = names.find((n) => n.toLowerCase() === label.toLowerCase());
+      if (!found) {
+        labelNote = `no label called "${label}" in this mailbox — read the whole inbox instead`;
+        useLabel = "";
+      } else {
+        useLabel = found;
+      }
+    } catch (e) { /* if the lookup fails, carry on with what we were given */ }
+  }
+
   const started = Date.now();
   const added = [];
   const problems = [];
@@ -47,7 +65,7 @@ async function sweep(dir, userId, options = {}) {
     const recent = last && Date.now() - last < 36 * 3600e3
       ? "newer_than:" + Math.max(1, Math.ceil((Date.now() - last) / 864e5)) + "d"
       : "";
-    ids = await google.listMessages(dir, userId, { label, query: recent, max });
+    ids = await google.listMessages(dir, userId, { label: useLabel, query: recent, max });
   } catch (e) {
     feed.log = [{ at: Date.now(), error: String(e && e.message || e) }, ...(feed.log || [])].slice(0, 50);
     writeFeed(dir, userId, feed);
@@ -100,6 +118,8 @@ async function sweep(dir, userId, options = {}) {
   feed.seen = [...seen].slice(-4000);
   feed.stats = {
     lastRun: Date.now(),
+    label: useLabel,
+    labelNote,
     tookMs: Date.now() - started,
     looked: ids.length,
     added: added.length,
@@ -109,7 +129,8 @@ async function sweep(dir, userId, options = {}) {
   };
   feed.log = [
     { at: Date.now(), looked: ids.length, added: added.length,
-      problems: problems.length, ms: Date.now() - started },
+      problems: problems.length, ms: Date.now() - started,
+      note: labelNote || undefined },
     ...(feed.log || []),
   ].slice(0, 50);
   writeFeed(dir, userId, feed);

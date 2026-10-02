@@ -157,6 +157,13 @@ async function api(dir, userId, pathname) {
 
 const profile = (dir, userId) => api(dir, userId, "/gmail/v1/users/me/profile");
 
+/* The labels that actually exist in the mailbox. Searching for one that
+   doesn't returns nothing, silently, forever — so it's worth checking. */
+async function listLabels(dir, userId) {
+  const r = await api(dir, userId, "/gmail/v1/users/me/labels");
+  return (r.labels || []).map((l) => l.name);
+}
+
 async function listMessages(dir, userId, { label, query, max = 10 } = {}) {
   const parts = [];
   if (label) parts.push("label:" + label);
@@ -223,5 +230,5 @@ const newState = () => crypto.randomBytes(24).toString("base64url");
 module.exports = {
   isConfigured, redirectUri, authUrl, exchangeCode, refresh,
   readTokens, writeTokens, forget, accessToken,
-  profile, listMessages, getMessage, getAttachment, flatten, newState, SCOPE,
+  profile, listLabels, listMessages, getMessage, getAttachment, flatten, newState, SCOPE,
 };
