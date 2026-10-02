@@ -26,6 +26,22 @@ to the built bundle until the source is rebuilt.
 - Verified in a headless browser against a local server: login, colour
   switch, dark and light, Automation connected and not. No page errors.
 
+### 2 October 2026 — floating My day, timer and calculator
+- **Float** button in the top bar opens a small window with three tabs:
+  My day (today's and overdue tasks, tick off, add new), Timer (countdown
+  with presets or stopwatch, beeps when done) and Calculator (keyboard
+  works, never uses eval, tap answer to copy, last four results kept).
+- Chrome and Edge on a computer: a real Picture-in-Picture window that
+  stays above every window and app. Safari, iPad, Firefox don't allow
+  that, so it becomes a draggable panel that floats over every MYDAY screen.
+- Minimise shrinks it to one line showing the next task and the timer.
+  Back-arrow returns to My day. The timer keeps running when minimised or
+  closed.
+- Readable source: `myday-live/public/float.js`. The bundle only hands it
+  live state (`window.__myday`) and shows the button.
+- Tested in a headless browser in both modes: ticking syncs both ways,
+  timer runs, 12×3+4 = 40, minimise and close work, no page errors.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
