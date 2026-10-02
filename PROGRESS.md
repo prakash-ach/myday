@@ -2,7 +2,31 @@
 
 Updated at the end of every working session. Read this before changing code.
 
-## Where we are
+## Live prototype (`myday-live`, on the droplet)
+
+This is what runs at myday.acharyaandcollc.com today. The Next.js phases
+below are the longer-term rebuild and haven't replaced it yet.
+
+**Known gap:** the readable source for `public/app.js` (`myday-live/src/`)
+was never committed. Screen changes are made as checked, exact-match edits
+to the built bundle until the source is rebuilt.
+
+### 2 October 2026 — one colour, glass panels, a live Automation light
+- **App colour** row in Settings recolours everything at once: both
+  spaces, the "All" view (which used to stay grey), and every glow, edge,
+  grid line and hover ring, which were hard-coded green.
+- Panels, sidebar, top bar and the watcher strip are frosted glass over
+  the moving colour behind them, in light and dark.
+- Automation has a real status light, on its tab and on its page. Green
+  and blinking while Gmail is connected and watching, fast while reading,
+  red if the last pass failed, grey if Gmail isn't connected. It never
+  shows green when nothing is watching.
+- Fixed: Settings Dark/Light did nothing if the top-bar switch was on
+  System.
+- Verified in a headless browser against a local server: login, colour
+  switch, dark and light, Automation connected and not. No page errors.
+
+## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
 **Next: Phase 2** — Supabase, authentication, database schema, row level security.
