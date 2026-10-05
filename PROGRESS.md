@@ -42,6 +42,29 @@ to the built bundle until the source is rebuilt.
 - Tested in a headless browser in both modes: ticking syncs both ways,
   timer runs, 12×3+4 = 40, minimise and close work, no page errors.
 
+### 5 October 2026 — OpenAI: Gmail to tasks, and an assistant you can talk to
+- **Gmail → tasks with AI.** With `OPENAI_API_KEY` in `/etc/myday/secrets.env`,
+  the watcher has OpenAI read each new email (and attached PDF text) and draft
+  what needs doing: title, date, time, priority, category, 2–5 steps, and a
+  comment in the note (what was asked, by whom, amounts, deadline, Gmail link).
+  Newsletters and FYI mail get nothing. Drafts land in the Automation inbox and
+  only become tasks when approved; approving now keeps the time and steps.
+  The invoice reader's payment tasks are kept as-is (exact totals from PDFs).
+  If OpenAI fails or the limit is hit, the rule-based tasks stand.
+- **Assistant.** Round button on the right edge opens a side panel. Ask about
+  your tasks by typing, the mic, or **Talk** (hands-free: listens, answers out
+  loud, listens again). It can suggest add / mark done / move / priority as
+  buttons; nothing changes until tapped. Locked Personal tasks aren't sent.
+- **Settings → Appearance:** Assistant name (default Max) and icon.
+- Server: `lib/ai.js`, routes `/api/ai/status` and `/api/ai/chat`. Key never
+  reaches the browser. `OPENAI_MODEL` (default gpt-5.4-mini),
+  `AI_DAILY_LIMIT` (default 400 calls/person/day), `OPENAI_BASE_URL` optional.
+- Screen code: `public/assistant.js` (readable). Bundle edits: Settings rows,
+  approval keeps time and steps.
+- Tested against a pretend OpenAI: email → task with comment, steps and time;
+  newsletter dropped; OpenAI down falls back to rules; chat actions applied;
+  invented task ids dropped; bad key and no key show clear messages.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

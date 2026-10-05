@@ -12,6 +12,7 @@ const path = require("node:path");
 const google = require("./google");
 const { readDocument } = require("./documents");
 const { propose } = require("./propose");
+const ai = require("./ai");
 
 const feedFile = (dir, userId) => path.join(dir, "feed-" + userId + ".json");
 
@@ -56,6 +57,8 @@ async function sweep(dir, userId, options = {}) {
   const started = Date.now();
   const added = [];
   const problems = [];
+  let aiUsed = 0;
+  const today = new Date().toISOString().slice(0, 10);
 
   let ids = [];
   try {
@@ -79,12 +82,14 @@ async function sweep(dir, userId, options = {}) {
     catch (e) { problems.push({ id, error: String(e && e.message) }); continue; }
 
     const documents = [];
+    let attText = "";
     for (const att of (msg.attachments || [])) {
       if (!att.attachmentId || att.size > 12 * 1024 * 1024) continue;
       try {
         const buf = await google.getAttachment(dir, userId, id, att.attachmentId);
         const doc = readDocument(att.filename, att.mimeType, buf);
         doc.duplicate = seen.has("doc:" + doc.sha);
+        if (doc.text && attText.length < 4000) attText += `\n[${att.filename}]\n` + String(doc.text).slice(0, 4000 - attText.length);
         delete doc.text;
         documents.push(doc);
         seen.add("doc:" + doc.sha);
@@ -104,11 +109,33 @@ async function sweep(dir, userId, options = {}) {
       people: options.people || {},
     });
 
+    /* With OpenAI set up, it reads the email and drafts what you need to
+       do, with a comment and steps. The invoice reader's payment tasks are
+       kept as they are, because it copies totals straight off the PDF. If
+       the AI fails or the day's limit is used, the rules' tasks stand. */
+    let tasks = p.tasks;
+    let aiSummary = null;
+    if (ai.configured() && options.ai !== false && p.classified !== "muted" && aiUsed < (options.aiMax || 15)) {
+      aiUsed++;
+      try {
+        const r = await ai.emailTasks(dir, userId, {
+          id, threadId: msg.threadId, from: msg.from, to: msg.to, subject: msg.subject,
+          body: msg.body, date: msg.date, attachmentText: attText,
+        }, { today, categories: options.categories, userName: options.userName });
+        aiSummary = r.summary || null;
+        const keep = p.tasks.filter((t) => t.kind === "payment" && t.amount);
+        const extra = r.tasks.filter((t) => !(keep.length && /\bpay\b|invoice|payment/i.test(t.title)));
+        tasks = [...keep, ...extra];
+      } catch (e) {
+        problems.push({ subject: msg.subject, error: "AI: " + String(e && e.message || e) });
+      }
+    }
+
     seen.add("msg:" + id);
     const item = {
       id, from: msg.from, subject: msg.subject, date: msg.date, snippet: msg.snippet,
       seenAt: Date.now(), classified: p.classified, party: p.party, who: p.who || null,
-      documents, tasks: p.tasks, decided: null,
+      documents, tasks, aiSummary, decided: null,
       lines: documents.reduce((n, d) => n + (d.rows ? d.rows.length : 0), 0),
     };
     if (item.tasks.length || item.lines) added.push(item);
@@ -129,7 +156,8 @@ async function sweep(dir, userId, options = {}) {
   };
   feed.log = [
     { at: Date.now(), looked: ids.length, added: added.length,
-      problems: problems.length, ms: Date.now() - started,
+      problems: problems.length, ms: Date.now() - started, ai: aiUsed || undefined,
+      error: problems.length && problems.every((x) => /^AI:/.test(x.error)) && aiUsed ? problems[0].error : undefined,
       note: labelNote || undefined },
     ...(feed.log || []),
   ].slice(0, 50);

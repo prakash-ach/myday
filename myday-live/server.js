@@ -19,6 +19,20 @@ const { parseOnmInvoice } = require("./lib/extract-onm");
 const google = require("./lib/google");
 const { readDocument } = require("./lib/documents");
 const watcher = require("./lib/watcher");
+const ai = require("./lib/ai");
+
+/* What the AI needs to know about a person: their categories, so drafted
+   tasks land somewhere real, and their name. */
+function aiOptsFor(u) {
+  let cats = { company: [], personal: [] };
+  try {
+    const st = readJson(stateFile(u.id, "myday_proto_v1"));
+    let v = st && st.value;
+    if (typeof v === "string") v = JSON.parse(v);
+    if (v && v.categories) cats = { company: v.categories.company || [], personal: v.categories.personal || [] };
+  } catch (e) {}
+  return { categories: cats, userName: u.displayName || u.username };
+}
 
 /* Senders that should never become a task. Overridable per account. */
 const DEFAULT_MUTE = [
@@ -730,6 +744,7 @@ const server = http.createServer(async (req, res) => {
     let b; try { b = JSON.parse(await body(req)); } catch (e) { b = {}; }
     try {
       const r = await watcher.sweep(DATA_DIR, me.id, {
+        ...aiOptsFor(me),
         label: b.label || "", max: Math.min(30, b.max || 20),
         knownSuppliers: b.knownSuppliers || [],
         supplierAddresses: b.supplierAddresses || {},
@@ -758,6 +773,28 @@ const server = http.createServer(async (req, res) => {
     });
     watcher.writeFeed(DATA_DIR, me.id, feed);
     return json(res, 200, { updated: n });
+  }
+
+  /* The assistant. The key stays here; the browser only ever sees answers. */
+  if (p === "/api/ai/status" && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const u = ai.usage(DATA_DIR, me.id);
+    return json(res, 200, { configured: ai.configured(), model: ai.MODEL(), usedToday: u.calls, limit: ai.LIMIT() });
+  }
+  if (p === "/api/ai/chat" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    try {
+      const r = await ai.chat(DATA_DIR, me.id, {
+        messages: b.messages, context: b.context, assistantName: b.assistantName,
+        userName: me.displayName || me.username,
+      });
+      return json(res, 200, r);
+    } catch (e) {
+      return json(res, 400, { error: String(e && e.message || e) });
+    }
   }
 
   if (p === "/api/health") return json(res, 200, { ok: true, accounts: (readJson(usersFile()) || { users: [] }).users.length });
@@ -791,6 +828,7 @@ watcher.start(DATA_DIR, {
       ownNames: cfg.ownNames || ["mobilesentrix", "apt-ability"],
       people: cfg.people || {},
       mute: cfg.mute || DEFAULT_MUTE,
+      ...aiOptsFor(u),
     };
   },
 });

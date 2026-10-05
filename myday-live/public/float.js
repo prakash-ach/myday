@@ -494,7 +494,7 @@
     if (!document.getElementById("mdf-css")) { const st = document.createElement("style"); st.id = "mdf-css"; st.textContent = CSS; document.head.appendChild(st); }
     S.panel = document.createElement("div"); S.panel.className = "mdf-panel";
     let pos = null; try { pos = JSON.parse(localStorage.getItem("myday_float_pos") || "null"); } catch (e) {}
-    if (pos && pos.l) { S.panel.style.left = pos.l; S.panel.style.top = pos.t; } else { S.panel.style.right = "18px"; S.panel.style.bottom = "18px"; }
+    if (pos && pos.l) { S.panel.style.left = pos.l; S.panel.style.top = pos.t; } else { S.panel.style.right = "86px"; S.panel.style.bottom = "18px"; }
     S.root = document.createElement("div"); S.root.className = "mdf"; S.panel.appendChild(S.root);
     document.body.appendChild(S.panel);
     document.addEventListener("keydown", calcKeys);
