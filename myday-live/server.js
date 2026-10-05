@@ -25,13 +25,15 @@ const ai = require("./lib/ai");
    tasks land somewhere real, and their name. */
 function aiOptsFor(u) {
   let cats = { company: [], personal: [] };
+  let makes = [];
   try {
     const st = readJson(stateFile(u.id, "myday_proto_v1"));
     let v = st && st.value;
     if (typeof v === "string") v = JSON.parse(v);
     if (v && v.categories) cats = { company: v.categories.company || [], personal: v.categories.personal || [] };
+    if (v && v.catalog && Array.isArray(v.catalog.oems)) makes = v.catalog.oems.map((o) => o && o.name).filter(Boolean);
   } catch (e) {}
-  return { categories: cats, userName: u.displayName || u.username };
+  return { categories: cats, makes, userName: u.displayName || u.username };
 }
 
 /* Senders that should never become a task. Overridable per account. */
@@ -781,6 +783,38 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { updated: n });
   }
 
+  /* Read emails in the list again with today's readers and the AI. */
+  if (p === "/api/automation/reread" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const feed = watcher.readFeed(DATA_DIR, me.id);
+    const ids = Array.isArray(b.ids) && b.ids.length ? b.ids
+      : (feed.items || []).filter((x) => !x.decided).map((x) => x.id);
+    try {
+      const r = await watcher.reread(DATA_DIR, me.id, ids, watcherSettings(me));
+      return json(res, 200, { read: r.items.length, left: Math.max(0, ids.length - 15), problems: r.problems.slice(0, 5) });
+    } catch (e) { return json(res, 400, { error: String(e && e.message || e) }); }
+  }
+  /* Go back over the last few days, including mail the old rules passed over. */
+  if (p === "/api/automation/lookback" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req) || "{}"); } catch (e) { b = {}; }
+    try {
+      const r = await watcher.sweep(DATA_DIR, me.id, { ...watcherSettings(me), lookBackDays: Math.min(30, Math.max(1, Number(b.days) || 7)), max: 40 });
+      return json(res, 200, { added: r.added.length, problems: r.problems.slice(0, 5) });
+    } catch (e) { return json(res, 400, { error: String(e && e.message || e) }); }
+  }
+  /* An invoice's lines went into Auctions: remember, so it isn't logged twice. */
+  if (p === "/api/automation/logged" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const ok = watcher.markLogged(DATA_DIR, me.id, String(b.id || ""), String(b.sha || ""), b.count);
+    return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "couldn't find that invoice" });
+  }
+
   /* The assistant. The key stays here; the browser only ever sees answers. */
   if (p === "/api/ai/status" && req.method === "GET") {
     const me = userFromSession(sessionFor(req));
@@ -808,6 +842,13 @@ const server = http.createServer(async (req, res) => {
             mailId: x.id, from: clip(x.from, 80), subject: clip(x.subject, 140), date: x.date,
             kind: x.classified, summary: clip(x.aiSummary || x.snippet, 220),
             invoiceLines: x.lines || 0,
+            invoices: (x.documents || []).filter((d) => d.rows && d.rows.length).map((d) => ({
+              file: clip(d.filename, 60), supplier: clip(d.supplier, 60), reference: clip(d.reference, 40),
+              lines: d.rows.length, total: d.total || undefined, readByAI: !!d.byAI,
+              loggedToAuctions: d.logged ? new Date(d.logged.at).toISOString().slice(0, 10) : false,
+            })),
+            attachmentsNotRead: (x.documents || []).filter((d) => !(d.rows && d.rows.length) && (d.issues || []).length)
+              .map((d) => clip(d.filename + ": " + d.issues[0], 120)),
             proposed: (x.tasks || []).map((t) => ({ title: clip(t.title, 100), date: t.date, time: t.time || "",
               priority: t.priority, amount: t.amount || undefined, why: clip(t.why, 120) })),
           })),
@@ -837,10 +878,8 @@ setInterval(() => {
 }, 36e5).unref();
 
 /* Keep reading in the background, whether anyone is looking or not. */
-watcher.start(DATA_DIR, {
-  everyMinutes: Number(process.env.WATCH_MINUTES || 3),
-  usersFile, readJson,
-  settingsFor: (u) => {
+/* How the watcher reads one person's mail, from what they've set. */
+function watcherSettings(u) {
     const stored = readJson(stateFile(u.id, "myday_automation"));
     let cfg = {};
     try { cfg = stored && stored.value ? JSON.parse(stored.value) : {}; } catch (e) {}
@@ -858,7 +897,11 @@ watcher.start(DATA_DIR, {
       ...aiOptsFor(u),
       ai: aiAllowed(u.username, "ai-mail"),
     };
-  },
+}
+watcher.start(DATA_DIR, {
+  everyMinutes: Number(process.env.WATCH_MINUTES || 3),
+  usersFile, readJson,
+  settingsFor: watcherSettings,
 });
 
 server.listen(PORT, "127.0.0.1", () => {

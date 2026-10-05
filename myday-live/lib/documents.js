@@ -24,6 +24,7 @@ const kindOf = (filename, mimeType) => {
   if (f.endsWith(".xls")) return "xls";
   if (f.endsWith(".csv") || m.includes("csv")) return "csv";
   if (f.endsWith(".txt") || m.startsWith("text/")) return "text";
+  if (/\.(png|jpe?g|webp|gif)$/.test(f) || /^image\/(png|jpe?g|webp|gif)/.test(m)) return "image";
   return "other";
 };
 
@@ -76,6 +77,8 @@ function readDocument(filename, mimeType, buf) {
       out.text = (r.rows || []).map((x) => x.raw).join("\n");
     } else if (kind === "csv" || kind === "text") {
       out.text = buf.toString("utf8").slice(0, 200000);
+    } else if (kind === "image") {
+      // A photo or screenshot. Only the AI reader can do anything with it.
     } else if (kind === "xls") {
       out.issues.push("that's the older .xls format, which this can't read — ask them for .xlsx");
     } else {
@@ -87,4 +90,23 @@ function readDocument(filename, mimeType, buf) {
   return out;
 }
 
-module.exports = { readDocument, kindOf, hash, havePdftotext };
+/* Pages of a PDF as PNG pictures, for the AI to read when the PDF is a scan
+   with no text in it. A few pages at screen resolution keeps it light enough
+   for a small droplet. Returns base64 strings. */
+function pdfPages(buf, maxPages = 4, dpi = 110) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myday-pages-"));
+  const src = path.join(dir, "in.pdf");
+  try {
+    fs.writeFileSync(src, buf);
+    execFileSync("pdftoppm", ["-r", String(dpi), "-png", "-f", "1", "-l", String(maxPages), src, path.join(dir, "p")],
+      { stdio: "ignore", timeout: 60000 });
+    return fs.readdirSync(dir).filter((f) => f.endsWith(".png")).sort()
+      .map((f) => fs.readFileSync(path.join(dir, f)).toString("base64"));
+  } catch (e) {
+    return [];
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
+  }
+}
+
+module.exports = { readDocument, kindOf, hash, havePdftotext, pdfPages };

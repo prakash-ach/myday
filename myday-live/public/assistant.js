@@ -202,6 +202,7 @@
     if (a.type === "add") return ["Add task", `${a.title} · ${fmtDay(a.date)}${fmtTime(a.time)} · ${a.category || a.space}`];
     if (a.type === "approve_mail") return [`Add ${a.count === 1 ? "its task" : `its ${a.count} tasks`} from email`, a.subject];
     if (a.type === "ignore_mail") return ["Ignore email", a.subject];
+    if (a.type === "review_invoice") return ["Review invoice & log to Auctions", a.label || a.subject];
     if (!t) return null;
     if (a.type === "done") return ["Mark done", t.title];
     if (a.type === "move") return ["Move", `${t.title} → ${fmtDay(a.date)}${fmtTime(a.time)}`];
@@ -230,6 +231,7 @@
   function apply(a) {
     const c = ctx(); if (!c) return false;
     if (a.type === "approve_mail" || a.type === "ignore_mail") return applyMail(a);
+    if (a.type === "review_invoice") { if (window.MYDAYInvoice) { closePanel(); window.MYDAYInvoice.open(a.mailId); } return false; }
     if (a.type === "add") {
       c.addTask({
         id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4),

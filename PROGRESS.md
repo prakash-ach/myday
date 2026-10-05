@@ -80,6 +80,36 @@ to the built bundle until the source is rebuilt.
   It can summarise it and offer "Add from email" / "Ignore email" buttons,
   which do exactly what the Automation screen's buttons do.
 
+### 5 October 2026 — invoices from any supplier, read by AI, logged to Auctions
+- Why real mail looked wrong: the watcher only reads NEW mail, so everything
+  from before AI was switched on had only been seen by the old rules; and only
+  ONM (PDF) and Rexi (xlsx) invoices were ever turned into lines. Approving an
+  email never saved lines to Auctions at all.
+- `lib/ai.js readInvoice`: any other invoice — text PDF, scanned PDF (pages
+  sent as pictures via pdftoppm), photo, CSV, spreadsheet — becomes lines in
+  the same shape as the built-in readers (make, model, size, grade, carrier,
+  qty, unit price, line total), with fees separate. Each line is checked
+  (qty × price vs line total, all lines + fees vs invoice total) and gets a
+  confidence and plain-English issues.
+- `lib/watcher.js` restructured around `readOne()`, shared by the regular
+  check, **Read again** (`/api/automation/reread`) and **Look back N days**
+  (`/api/automation/lookback`, picks up mail the old rules passed over).
+  Re-reading keeps decisions and logged marks.
+- `public/invoice.js`: when an invoice with lines turns up, a card asks
+  "Invoice found — log it to Auctions?". Review opens an editable table
+  (supplier, date, invoice no., auction/lot, status; per line make, model,
+  size, grade, qty, price), flags lines to check, shows whether it adds up,
+  then logs ticked lines as Auction entries and adds new suppliers, grades,
+  models and sizes to the catalog. `/api/automation/logged` remembers it so
+  it isn't logged twice.
+- Automation screen: per email **Review invoice** / **Logged ✓** and
+  **Read again**; at the bottom **Read waiting again with AI** and
+  **Look back 7 days**. Max sees invoices too and can open the review.
+- Tested with a pretend Gmail (scanned PDF, CSV, older email) and a pretend
+  OpenAI: scan read from page images, CSV from text, makes and sizes
+  normalised, totals check, flagged line fixed, 3 entries logged with notes,
+  catalog updated, marked logged, look-back found the older email.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

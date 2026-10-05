@@ -158,6 +158,95 @@ Personal categories: ${JSON.stringify(cats.personal || [])}`;
   return { summary: clip(out.summary, 200), tasks };
 }
 
+/* ---------- 1b. any invoice → clean auction lines ----------
+ * For attachments the built-in ONM and Rexi readers don't recognise: text
+ * PDFs, scans, photos, spreadsheets and CSVs. It sends the text, or page
+ * pictures for scans and photos, and asks for every device line in the same
+ * shape MYDAY's own readers produce. Each line is then checked here (qty ×
+ * price against the line total, the lines against the invoice total) and
+ * gets a confidence score and plain-English issues, so you can see what to
+ * check before anything is logged. */
+const MAKES = ["Apple", "Samsung", "Google", "Motorola", "OnePlus", "LG", "TCL", "Nokia", "Xiaomi", "Sony", "Huawei", "ZTE", "Alcatel", "Kyocera", "Microsoft", "Lenovo"];
+const num = (x) => { const n = Number(String(x == null ? "" : x).replace(/[$,\s]/g, "")); return Number.isFinite(n) ? n : null; };
+
+async function readInvoice(dir, userId, doc) {
+  const known = [...new Set([...(doc.makes || []), ...MAKES])];
+  const sys = `You read supplier invoices for a business that buys used phones and devices, often at auction, and turn them into clean lines.
+Reply with JSON only:
+{"is_invoice": true|false,
+ "supplier": "company that issued it",
+ "reference": "invoice number as printed",
+ "auction": "auction / lot / PO reference if any, else empty",
+ "date": "YYYY-MM-DD invoice date",
+ "currency": "USD unless it says otherwise",
+ "total": number (grand total as printed) or null,
+ "fees": [{"label":"shipping / tax / buyer premium / etc","amount":number}],
+ "lines": [{"oem":"maker","model":"model","size":"128GB","grade":"A","carrier":"","qty":1,"price":0,"amount":0,"raw":"line as printed"}],
+ "notes": "anything unclear, short"}
+Rules for lines:
+- One line per product line on the invoice. Devices only; shipping, tax, fees and premiums go in "fees", not lines.
+- oem: one of ${JSON.stringify(known)} if it fits, spelled exactly like that; otherwise as written.
+- model: without the maker's name, as a buyer would say it, e.g. "iPhone 13 Pro Max", "Galaxy S22 Ultra", "Pixel 7a".
+- size: storage like "64GB", "128GB", "1TB"; "—" if none.
+- grade: exactly as the invoice grades it, uppercase, e.g. "A", "B+", "C", "D", "CPO", "NEW". Empty if not stated.
+- carrier: e.g. "Unlocked", "T-Mobile", "Verizon", "AT&T", empty if not stated.
+- qty: whole number. price: unit price per device. amount: line total. Numbers only, no $.
+- Copy what's printed. Never invent lines, prices or grades. If you can't read part of it, say so in notes.
+If this isn't an invoice, bill, receipt or packing list with prices, set is_invoice false and lines [].`;
+
+  const head = `File: ${doc.filename}\nEmail from: ${doc.from || ""}\nEmail subject: ${doc.subject || ""}`;
+  const content = [];
+  if (doc.text && doc.text.trim()) {
+    content.push({ type: "text", text: `${head}\n\n--- Document text ---\n${String(doc.text).slice(0, 24000)}` });
+  } else {
+    content.push({ type: "text", text: `${head}\n\nThe document is attached as ${doc.images.length} page picture(s).` });
+    for (const b64 of (doc.images || []).slice(0, 4)) {
+      content.push({ type: "image_url", image_url: { url: `data:${doc.imageType || "image/png"};base64,${b64}`, detail: "high" } });
+    }
+  }
+  const out = await call(dir, userId, [{ role: "system", content: sys }, { role: "user", content }], { maxTokens: 12000 });
+  if (!out || out.is_invoice === false) return { isInvoice: false, lines: [], notes: clip(out && out.notes, 200) };
+
+  const lines = (Array.isArray(out.lines) ? out.lines : []).slice(0, 400).map((l) => {
+    const row = {
+      raw: clip(l.raw, 200), oem: clip(l.oem, 30), model: clip(l.model, 80),
+      size: clip(l.size, 12) || "—", grade: clip(l.grade, 10).toUpperCase(), carrier: clip(l.carrier, 20),
+      qty: Math.max(1, Math.round(num(l.qty) || 1)), price: num(l.price) || 0, amount: num(l.amount),
+      confidence: 1, issues: [], byAI: true,
+    };
+    const mk = known.find((m) => m.toLowerCase() === row.oem.toLowerCase());
+    if (mk) row.oem = mk; else { row.issues.push("make not recognised"); row.confidence -= 0.3; }
+    if (row.size !== "—") {
+      const m = row.size.replace(/\s+/g, "").match(/^(\d+)(GB|TB)$/i);
+      if (m) row.size = m[1] + m[2].toUpperCase(); else { row.issues.push("storage size looks odd"); row.confidence -= 0.1; }
+    } else { row.issues.push("no storage size"); row.confidence -= 0.2; }
+    if (!row.grade) { row.issues.push("no grade on the line"); row.confidence -= 0.3; }
+    if (!row.model) { row.issues.push("no model"); row.confidence -= 0.4; }
+    if (!row.price) { row.issues.push("no price"); row.confidence -= 0.4; }
+    if (row.amount != null && row.price && Math.abs(row.qty * row.price - row.amount) > 0.05) {
+      row.issues.push("quantity times price doesn't match the line total"); row.confidence -= 0.2;
+    }
+    if (row.amount == null) row.amount = Math.round(row.qty * row.price * 100) / 100;
+    row.confidence = Math.max(0, Math.round(row.confidence * 100) / 100);
+    return row;
+  }).filter((r) => r.model || r.raw);
+
+  const fees = (Array.isArray(out.fees) ? out.fees : []).slice(0, 12)
+    .map((f) => ({ label: clip(f.label, 40), amount: num(f.amount) || 0 })).filter((f) => f.amount);
+  const total = num(out.total);
+  const warnings = [];
+  const summed = lines.reduce((n, r) => n + r.amount, 0) + fees.reduce((n, f) => n + f.amount, 0);
+  if (total && lines.length && Math.abs(summed - total) > 1) {
+    warnings.push(`lines and fees add to ${summed.toFixed(2)} but the invoice total is ${total.toFixed(2)}`);
+  }
+  if (out.notes) warnings.push("AI: " + clip(out.notes, 160));
+  return {
+    isInvoice: true, lines, fees, total, warnings,
+    supplier: clip(out.supplier, 80), reference: clip(out.reference, 60), auction: clip(out.auction, 60),
+    date: isDate(out.date) ? out.date : "", currency: clip(out.currency, 6) || "USD",
+  };
+}
+
 /* ---------- 2. the assistant you talk to ---------- */
 async function chat(dir, userId, { messages, context, assistantName, userName, mail }) {
   const name = clip(assistantName, 30) || "Max";
@@ -175,12 +264,14 @@ Reply with JSON only:
    {"type":"move","id":"task id","date":"YYYY-MM-DD","time":"HH:MM or empty"},
    {"type":"priority","id":"task id","priority":"low|normal|high|urgent"},
    {"type":"approve_mail","mailId":"mail id"},
-   {"type":"ignore_mail","mailId":"mail id"}
+   {"type":"ignore_mail","mailId":"mail id"},
+   {"type":"review_invoice","mailId":"mail id"}
  ]}
 Only use ids that appear in the data. Only suggest actions when the user asks for a change or clearly wants one; otherwise "actions": [].
 If something isn't in the data, say you can't see it rather than guessing.
 ${mail ? `
 "Automation" (also called the Automation tab or inbox) is the list below: emails MYDAY read from their Gmail, with the tasks it proposed, waiting for them to approve or ignore. When they ask about Automation, their Gmail, or what came in, use this. approve_mail adds that email's proposed tasks; ignore_mail dismisses it. Mention amounts and deadlines when there are any.
+Each email may list "invoices" read from its attachments (supplier, lines, total, whether already logged to Auctions). When one isn't logged yet, offer review_invoice, which opens it for them to check and log to Auctions. "attachmentsNotRead" says what couldn't be read and why.
 Automation inbox:
 ${mailText}
 ` : `
@@ -206,6 +297,11 @@ ${ctxText}`;
         date: isDate(a.date) ? a.date : (context && context.today), time: isTime(a.time) ? a.time : "",
         priority: PRI.has(a.priority) ? a.priority : "normal", note: clip(a.note, 600) };
     }
+    if (a.type === "review_invoice") {
+      const m = mails.get(a.mailId);
+      const inv = m && (m.invoices || [])[0];
+      return inv ? { type: a.type, mailId: a.mailId, subject: m.subject, label: `${inv.supplier || m.from} · ${inv.lines} lines${inv.total ? " · $" + inv.total : ""}` } : null;
+    }
     if (a.type === "approve_mail" || a.type === "ignore_mail") {
       const m = mails.get(a.mailId);
       return m ? { type: a.type, mailId: a.mailId, subject: m.subject, from: m.from, count: m.proposed.length } : null;
@@ -220,4 +316,4 @@ ${ctxText}`;
   return { reply: String(out.reply || "").slice(0, 3000) || "…", actions };
 }
 
-module.exports = { configured, MODEL, LIMIT, usage, emailTasks, chat };
+module.exports = { configured, MODEL, LIMIT, usage, emailTasks, readInvoice, chat };
