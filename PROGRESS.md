@@ -65,6 +65,21 @@ to the built bundle until the source is rebuilt.
   newsletter dropped; OpenAI down falls back to rules; chat actions applied;
   invented task ids dropped; bad key and no key show clear messages.
 
+### 5 October 2026 — who gets AI, per person
+- Settings → Team now has two switches per person: **AI assistant** and
+  **AI reads their Gmail**. Off for everyone except the owner until switched
+  on. Enforced on the server: the chat route refuses, and the watcher skips
+  the AI pass, for anyone without the switch. Their assistant button hides.
+- Implemented as two extra entries (`ai-chat`, `ai-mail`) in the server's
+  section list, so they use the existing Team storage in `team.json`.
+
+### 5 October 2026 — the assistant can see the Automation inbox
+- First live run worked (gpt-6-luna answered "What's on today?" from real tasks).
+- The assistant now also gets the Automation inbox (waiting emails, sender,
+  AI summary, proposed tasks, amounts) for anyone allowed to see Automation.
+  It can summarise it and offer "Add from email" / "Ignore email" buttons,
+  which do exactly what the Automation screen's buttons do.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

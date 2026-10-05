@@ -159,9 +159,10 @@ Personal categories: ${JSON.stringify(cats.personal || [])}`;
 }
 
 /* ---------- 2. the assistant you talk to ---------- */
-async function chat(dir, userId, { messages, context, assistantName, userName }) {
+async function chat(dir, userId, { messages, context, assistantName, userName, mail }) {
   const name = clip(assistantName, 30) || "Max";
-  const ctxText = JSON.stringify(context || {}).slice(0, 60000);
+  const ctxText = JSON.stringify(context || {}).slice(0, 50000);
+  const mailText = mail ? JSON.stringify(mail).slice(0, 30000) : "";
   const sys = `You are ${name}, the assistant inside MYDAY, ${clip(userName, 40) || "the user"}'s task planner. You are friendly, brief and practical, and you speak plainly — short sentences, no jargon.
 You can see their tasks in the JSON below (ids, titles, dates, times, categories, done or not). Today is ${context && context.today}, now is ${context && context.now}.
 Answer questions about their tasks, help them plan the day, and suggest changes.
@@ -172,12 +173,20 @@ Reply with JSON only:
    {"type":"add","title":"...","space":"company|personal","category":"exact category name","date":"YYYY-MM-DD","time":"HH:MM or empty","priority":"low|normal|high|urgent","note":"optional"},
    {"type":"done","id":"task id"},
    {"type":"move","id":"task id","date":"YYYY-MM-DD","time":"HH:MM or empty"},
-   {"type":"priority","id":"task id","priority":"low|normal|high|urgent"}
+   {"type":"priority","id":"task id","priority":"low|normal|high|urgent"},
+   {"type":"approve_mail","mailId":"mail id"},
+   {"type":"ignore_mail","mailId":"mail id"}
  ]}
 Only use ids that appear in the data. Only suggest actions when the user asks for a change or clearly wants one; otherwise "actions": [].
 If something isn't in the data, say you can't see it rather than guessing.
-
-Their data:
+${mail ? `
+"Automation" (also called the Automation tab or inbox) is the list below: emails MYDAY read from their Gmail, with the tasks it proposed, waiting for them to approve or ignore. When they ask about Automation, their Gmail, or what came in, use this. approve_mail adds that email's proposed tasks; ignore_mail dismisses it. Mention amounts and deadlines when there are any.
+Automation inbox:
+${mailText}
+` : `
+They can't see the Automation inbox (the owner hasn't given them that section), so say so if they ask about it.
+`}
+Their tasks:
 ${ctxText}`;
 
   const convo = (Array.isArray(messages) ? messages : []).slice(-16)
@@ -188,6 +197,7 @@ ${ctxText}`;
   const out = await call(dir, userId, [{ role: "system", content: sys }, ...convo], { maxTokens: 1200 });
   const cats = (context && context.categories) || {};
   const ids = new Set(((context && context.tasks) || []).map((t) => t.id));
+  const mails = new Map(((mail && mail.waiting) || []).map((m) => [m.mailId, m]));
   const actions = (Array.isArray(out.actions) ? out.actions : []).slice(0, 8).map((a) => {
     if (!a || typeof a !== "object") return null;
     if (a.type === "add") {
@@ -195,6 +205,10 @@ ${ctxText}`;
       return { type: "add", title: clip(a.title, 90), space, category: pickCategory(cats, space, a.category),
         date: isDate(a.date) ? a.date : (context && context.today), time: isTime(a.time) ? a.time : "",
         priority: PRI.has(a.priority) ? a.priority : "normal", note: clip(a.note, 600) };
+    }
+    if (a.type === "approve_mail" || a.type === "ignore_mail") {
+      const m = mails.get(a.mailId);
+      return m ? { type: a.type, mailId: a.mailId, subject: m.subject, from: m.from, count: m.proposed.length } : null;
     }
     if (!ids.has(a.id)) return null;
     if (a.type === "done") return { type: "done", id: a.id };

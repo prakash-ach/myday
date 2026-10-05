@@ -165,7 +165,12 @@ async function serveStatic(req, res, urlPath) {
  * user cannot grant themselves anything by editing their own browser.
  */
 const ALL_SECTIONS = ["dashboard", "today", "tasks", "calendar", "projects",
-  "auctions", "automation", "development", "notes", "goals", "habits", "settings"];
+  "auctions", "automation", "development", "notes", "goals", "habits", "settings",
+  "ai-chat", "ai-mail"];
+/* The two AI switches ride along with the sections, so the owner turns them
+   on per person in Settings → Team. Nobody but the owner has them until then:
+   "ai-chat" is the assistant, "ai-mail" lets AI read their Gmail for tasks. */
+const aiAllowed = (username, which) => sectionsFor(username).indexOf(which) >= 0;
 const STARTER_SECTIONS = ["dashboard", "today", "tasks", "calendar", "notes", "settings"];
 
 function readTeam() {
@@ -745,6 +750,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const r = await watcher.sweep(DATA_DIR, me.id, {
         ...aiOptsFor(me),
+        ai: aiAllowed(me.username, "ai-mail"),
         label: b.label || "", max: Math.min(30, b.max || 20),
         knownSuppliers: b.knownSuppliers || [],
         supplierAddresses: b.supplierAddresses || {},
@@ -780,14 +786,35 @@ const server = http.createServer(async (req, res) => {
     const me = userFromSession(sessionFor(req));
     if (!me) return json(res, 401, { error: "not signed in" });
     const u = ai.usage(DATA_DIR, me.id);
-    return json(res, 200, { configured: ai.configured(), model: ai.MODEL(), usedToday: u.calls, limit: ai.LIMIT() });
+    return json(res, 200, { configured: ai.configured(), model: ai.MODEL(), usedToday: u.calls, limit: ai.LIMIT(),
+      allowedChat: aiAllowed(me.username, "ai-chat"), allowedMail: aiAllowed(me.username, "ai-mail") });
   }
   if (p === "/api/ai/chat" && req.method === "POST") {
     const me = userFromSession(sessionFor(req));
     if (!me) return json(res, 401, { error: "not signed in" });
+    if (!aiAllowed(me.username, "ai-chat")) return json(res, 403, { error: "The owner hasn't switched the assistant on for you." });
     let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
     try {
+      /* The Automation inbox: what the watcher found and is waiting on you.
+         Only for people allowed to see Automation. */
+      let mail = null;
+      if (sectionsFor(me.username).indexOf("automation") >= 0) {
+        const feed = watcher.readFeed(DATA_DIR, me.id);
+        const clip = (x, n) => String(x || "").replace(/\s+/g, " ").trim().slice(0, n);
+        mail = {
+          lastLook: feed.stats && feed.stats.lastRun ? new Date(feed.stats.lastRun).toISOString() : null,
+          handledSoFar: (feed.items || []).filter((x) => x.decided).length,
+          waiting: (feed.items || []).filter((x) => !x.decided).slice(0, 40).map((x) => ({
+            mailId: x.id, from: clip(x.from, 80), subject: clip(x.subject, 140), date: x.date,
+            kind: x.classified, summary: clip(x.aiSummary || x.snippet, 220),
+            invoiceLines: x.lines || 0,
+            proposed: (x.tasks || []).map((t) => ({ title: clip(t.title, 100), date: t.date, time: t.time || "",
+              priority: t.priority, amount: t.amount || undefined, why: clip(t.why, 120) })),
+          })),
+        };
+      }
       const r = await ai.chat(DATA_DIR, me.id, {
+        mail,
         messages: b.messages, context: b.context, assistantName: b.assistantName,
         userName: me.displayName || me.username,
       });
@@ -829,6 +856,7 @@ watcher.start(DATA_DIR, {
       people: cfg.people || {},
       mute: cfg.mute || DEFAULT_MUTE,
       ...aiOptsFor(u),
+      ai: aiAllowed(u.username, "ai-mail"),
     };
   },
 });

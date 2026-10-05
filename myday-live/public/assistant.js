@@ -143,7 +143,7 @@
       S.el.launch.querySelector(".ico").textContent = icon();
       S.el.launch.title = `Talk to ${name()}`;
       S.el.launch.style.bottom = c && c.narrow ? "calc(env(safe-area-inset-bottom,0px) + 86px)" : "22px";
-      S.el.launch.classList.toggle("hide", !c || !S.signedIn || S.open);
+      S.el.launch.classList.toggle("hide", !c || !S.signedIn || S.open || !!(S.status && S.status.allowedChat === false));
       const dot = S.el.launch.querySelector(".dot");
       dot.className = "dot" + (S.status && S.status.configured ? "" : " off");
     }
@@ -200,14 +200,36 @@
   function describe(a) {
     const t = a.id ? findTask(a.id) : null;
     if (a.type === "add") return ["Add task", `${a.title} · ${fmtDay(a.date)}${fmtTime(a.time)} · ${a.category || a.space}`];
+    if (a.type === "approve_mail") return [`Add ${a.count === 1 ? "its task" : `its ${a.count} tasks`} from email`, a.subject];
+    if (a.type === "ignore_mail") return ["Ignore email", a.subject];
     if (!t) return null;
     if (a.type === "done") return ["Mark done", t.title];
     if (a.type === "move") return ["Move", `${t.title} → ${fmtDay(a.date)}${fmtTime(a.time)}`];
     if (a.type === "priority") return ["Set priority", `${t.title} → ${a.priority}`];
     return null;
   }
+  const decide = (id, decision) => fetch("/api/automation/decide", { method: "POST", credentials: "same-origin",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ id, decision }) }).then((r) => r.ok);
+  async function applyMail(a) {
+    const c = ctx(); if (!c) return false;
+    if (a.type === "ignore_mail") return decide(a.mailId, "ignored");
+    const r = await fetch("/api/automation/feed", { credentials: "same-origin" });
+    const feed = r.ok ? await r.json() : null;
+    const m = feed && (feed.items || []).find((x) => x.id === a.mailId);
+    if (!m) return false;
+    (m.tasks || []).forEach((d) => c.addTask({
+      id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4),
+      title: d.title, space: d.space || "company", category: d.category, date: d.date, time: d.time || "",
+      repeat: "none", repeatDays: null, repeatEvery: 1, repeatUntil: null, priority: d.priority || "normal",
+      note: d.note || "", subtasks: (d.subtasks || []).map((z) => ({ ...z, done: false })), projectId: null,
+      done: {}, createdAt: Date.now(), fromEmail: true,
+      source: { kind: "gmail", from: m.from, subject: m.subject, at: Date.now(), amount: d.amount || null, reference: d.reference || "" },
+    }));
+    return decide(a.mailId, "approved");
+  }
   function apply(a) {
     const c = ctx(); if (!c) return false;
+    if (a.type === "approve_mail" || a.type === "ignore_mail") return applyMail(a);
     if (a.type === "add") {
       c.addTask({
         id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4),
@@ -251,7 +273,7 @@
         h("b", null, `Hi${first}, I'm ${name()}`),
         h("div", null, "Ask me anything about your tasks. I can suggest changes too — you tap to make them."),
         h("div", { class: "mda-chips" },
-          ["What's on today?", "What's overdue?", "Plan my day", "What's coming this week?", "Move everything overdue to tomorrow"]
+          ["What's on today?", "What's overdue?", "Plan my day", "Summarize my Automation inbox", "What's coming this week?"]
             .map((q) => h("button", { class: "mda-chip", onclick: () => ask(q) }, q)))));
     }
     S.msgs.forEach((m, i) => {
@@ -264,10 +286,12 @@
             acts.map(({ a, j, d }) => h("div", { class: "mda-act" },
               h("span", null, d[0], h("small", null, d[1])),
               m.did && m.did[j] ? h("span", { class: "mda-did" }, "Done ✓")
-                : h("button", { class: "mda-do", onclick: () => { if (apply(a)) { (m.did = m.did || {})[j] = true; renderList(); } } }, "Do it"))));
+                : h("button", { class: "mda-do", onclick: async (e) => { e.target.disabled = true; if (await apply(a)) { (m.did = m.did || {})[j] = true; } renderList(); } }, "Do it"))));
           const left = acts.filter(({ j }) => !(m.did && m.did[j]));
-          if (left.length > 1) box.appendChild(h("button", { class: "mda-chip", style: "align-self:flex-start", onclick: () => {
-            m.did = m.did || {}; left.forEach(({ a, j }) => { if (apply(a)) m.did[j] = true; }); renderList();
+          if (left.length > 1) box.appendChild(h("button", { class: "mda-chip", style: "align-self:flex-start", onclick: async (e) => {
+            e.target.disabled = true; m.did = m.did || {};
+            for (const { a, j } of left) { if (await apply(a)) m.did[j] = true; }
+            renderList();
           } }, `Do all ${left.length}`));
           kids.push(box);
         }
