@@ -147,7 +147,14 @@ async function accessToken(dir, userId) {
 
 /* ---------------- reading mail ---------------- */
 
+/* READ-ONLY, by design and by force. MYDAY only ever asks Google for the
+   gmail.readonly permission, and this is the only way it talks to Gmail:
+   GET requests to read the profile, labels, messages and attachments. It
+   never sends, deletes, archives, labels or marks anything read. A path
+   outside this list is refused here before anything leaves the server. */
+const READ_ONLY_PATHS = /^\/gmail\/v1\/users\/me\/(profile|labels|messages(\?[^/]*)?|messages\/[0-9a-fA-F]{6,40}\?format=full|messages\/[0-9a-fA-F]{6,40}\/attachments\/[A-Za-z0-9_%-]+)$/;
 async function api(dir, userId, pathname) {
+  if (!READ_ONLY_PATHS.test(pathname)) throw new Error("MYDAY only reads Gmail; refused " + pathname.split("?")[0]);
   const token = await accessToken(dir, userId);
   return request({
     method: "GET", host: "gmail.googleapis.com", path: pathname,
@@ -212,6 +219,8 @@ function flatten(msg) {
     body: text.trim().slice(0, 20000),
     snippet: msg.snippet || "",
     attachments,
+    labelIds: (msg.labelIds || []).filter((l) => /^CATEGORY_|^SPAM$|^INBOX$/.test(l)),
+    listUnsubscribe: !!headers["list-unsubscribe"],
   };
 }
 

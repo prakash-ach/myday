@@ -13,6 +13,8 @@ const google = require("./google");
 const { readDocument, pdfPages } = require("./documents");
 const { propose } = require("./propose");
 const ai = require("./ai");
+const rulesLib = require("./rules");
+const outbox = require("./outbox");
 
 const feedFile = (dir, userId) => path.join(dir, "feed-" + userId + ".json");
 
@@ -55,6 +57,7 @@ async function readOne(dir, userId, id, options, run) {
     try {
       const buf = await google.getAttachment(dir, userId, id, att.attachmentId);
       const doc = readDocument(att.filename, att.mimeType, buf);
+      doc.att = (msg.attachments || []).indexOf(att);
       doc.duplicate = !run.reread && run.seen.has("doc:" + doc.sha);
       const text = doc.text || "";
 
@@ -119,14 +122,17 @@ async function readOne(dir, userId, id, options, run) {
      day's limit is used, the rules' tasks stand. */
   let tasks = p.tasks;
   let aiSummary = null;
+  let classify = null;
   if (aiOn && p.classified !== "muted" && run.ai < (options.aiMax || 15)) {
     run.ai++;
     try {
       const r = await ai.emailTasks(dir, userId, {
         id, threadId: msg.threadId, from: msg.from, to: msg.to, subject: msg.subject,
         body: msg.body, date: msg.date, attachmentText: attText,
-      }, { today: run.today, categories: options.categories, userName: options.userName });
+      }, { today: run.today, categories: options.categories, userName: options.userName,
+           ownDomains: options.ownDomains, promoHints: options.rules && options.rules.promoHints });
       aiSummary = r.summary || null;
+      classify = r.classify || null;
       const keep = p.tasks.filter((t) => t.kind === "payment" && t.amount);
       const extra = r.tasks.filter((t) => !(keep.length && /\bpay\b|invoice|payment/i.test(t.title)));
       tasks = [...keep, ...extra];
@@ -136,20 +142,50 @@ async function readOne(dir, userId, id, options, run) {
   }
 
   return {
-    id, from: msg.from, subject: msg.subject, date: msg.date, snippet: msg.snippet,
+    id, threadId: msg.threadId, from: msg.from, subject: msg.subject, date: msg.date, snippet: msg.snippet,
     seenAt: Date.now(), classified: p.classified, party: p.party, who: p.who || null,
-    documents, tasks, aiSummary, decided: null, readWithAI: aiOn || undefined,
+    labelIds: msg.labelIds || [], listUnsubscribe: msg.listUnsubscribe || undefined,
+    documents, tasks, aiSummary, classify, decided: null, readWithAI: aiOn || undefined,
     lines: documents.reduce((n, d) => n + (d.rows ? d.rows.length : 0), 0),
   };
 }
 
+/* Your automatic rules (see rules.js). Adds tasks to the outbox, marks
+   promotions Ignored, and notes why — or does nothing if no rule fits. */
+function applyRules(dir, userId, item, options, run) {
+  const rules = options.rules;
+  if (!rules) return;
+  const d = rulesLib.decide(item, { classify: item.classify, summary: item.aiSummary }, rules, { ownDomains: options.ownDomains || [] });
+  if (!d) return;
+  const at = Date.now();
+  const entry = { at, rule: d.rule, action: d.action, reason: d.reason, mailId: item.id, from: item.from, subject: item.subject };
+  item.auto = (item.auto || []).filter((a) => a.rule !== d.rule);
+  if (d.action === "task") {
+    const task = rulesLib.buildTask(item, { classify: item.classify, summary: item.aiSummary }, d, rules, options);
+    const isNew = outbox.add(dir, userId, task, { mailId: item.id, rule: d.rule, reason: d.reason });
+    item.auto.push({ rule: d.rule, action: "task", taskId: task.id, title: task.title, reason: d.reason, at, already: !isNew || undefined });
+    if (isNew) run.autoLog.push({ ...entry, title: task.title, taskId: task.id });
+  } else if (d.action === "ignore") {
+    item.auto.push({ rule: d.rule, action: "ignore", reason: d.reason, at });
+    if (!item.decided) {
+      item.decided = "ignored"; item.decidedAt = at; item.decidedBy = "auto"; item.decidedReason = d.reason;
+      run.autoLog.push(entry);
+    }
+  } else {
+    item.auto.push({ rule: d.rule, action: "review", reason: d.reason, at });
+    run.autoLog.push(entry);
+  }
+}
+
 const newRun = (feed) => ({
+  autoLog: [],
   seen: new Set(feed.seen || []), problems: [], ai: 0, invoices: 0,
   today: new Date().toISOString().slice(0, 10), reread: false,
 });
 
 function finish(dir, userId, feed, run, extra) {
   feed.seen = [...run.seen].slice(-4000);
+  feed.autoLog = [...run.autoLog, ...(feed.autoLog || [])].slice(0, 300);
   feed.stats = {
     ...(feed.stats || {}),
     ...extra.stats,
@@ -164,6 +200,7 @@ function finish(dir, userId, feed, run, extra) {
     ...(feed.log || []),
   ].slice(0, 50);
   writeFeed(dir, userId, feed);
+  try { outbox.deliver(dir, userId); } catch (e) { /* the next tab or pass will pick them up */ }
 }
 
 /* One pass over one mailbox. Returns what it added.
@@ -212,7 +249,8 @@ async function sweep(dir, userId, options = {}) {
     try { item = await readOne(dir, userId, id, options, run); }
     catch (e) { run.problems.push({ id, error: String(e && e.message) }); continue; }
     run.seen.add("msg:" + id);
-    if (item.tasks.length || item.lines) added.push(item);
+    applyRules(dir, userId, item, options, run);
+    if (item.tasks.length || item.lines || (item.auto && item.auto.length)) added.push(item);
   }
 
   feed.items = [...added, ...(feed.items || [])].slice(0, 300);
@@ -242,11 +280,14 @@ async function reread(dir, userId, ids, options = {}) {
     catch (e) { run.problems.push({ id, error: String(e && e.message) }); continue; }
     item.decided = old.decided || null;
     if (old.decidedAt) item.decidedAt = old.decidedAt;
+    if (old.decidedBy) { item.decidedBy = old.decidedBy; item.decidedReason = old.decidedReason; }
+    if (old.undoneAt) item.undoneAt = old.undoneAt;
     item.seenAt = old.seenAt;
     for (const d of item.documents) {
       const was = (old.documents || []).find((o) => o.sha === d.sha);
       if (was && was.logged) d.logged = was.logged;
     }
+    if (!item.undoneAt) applyRules(dir, userId, item, options, run);
     feed.items[i] = item;
     done.push(item);
   }
@@ -297,4 +338,16 @@ function start(dir, { everyMinutes = 10, usersFile, readJson, settingsFor } = {}
   return { pass, stop: () => clearInterval(timer) };
 }
 
-module.exports = { sweep, reread, markLogged, readFeed, writeFeed, start };
+/* Put an automatically ignored message back in Review. */
+function undoIgnore(dir, userId, id) {
+  const feed = readFeed(dir, userId);
+  const item = (feed.items || []).find((x) => x.id === id);
+  if (!item || item.decidedBy !== "auto") return false;
+  item.decided = null; item.decidedBy = null; item.undoneAt = Date.now();
+  feed.autoLog = [{ at: Date.now(), rule: "you", action: "undo", reason: "you put it back in Review", mailId: id, from: item.from, subject: item.subject },
+    ...(feed.autoLog || [])].slice(0, 300);
+  writeFeed(dir, userId, feed);
+  return true;
+}
+
+module.exports = { sweep, reread, markLogged, undoIgnore, readFeed, writeFeed, start };

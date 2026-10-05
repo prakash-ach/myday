@@ -110,6 +110,83 @@ to the built bundle until the source is rebuilt.
   normalised, totals check, flagged line fixed, 3 entries logged with notes,
   catalog updated, marked logged, look-back found the older email.
 
+### 5 October 2026 — automatic tasks and auto-ignore (owner-authorised)
+Prakash authorised MYDAY to create review tasks and mark messages Ignored
+inside MYDAY without approval, for five rules. Not authorised, and not done:
+sending mail, bidding, paying, deleting or changing anything in Gmail.
+- `lib/rules.js`: the AI now also classifies each email (bid file / supplier
+  invoice / order / promotion / other, with confidence, deadline, amount,
+  refs). Plain code then applies the rules:
+  1. auction bid file → task today (sender, auction, bid deadline, links);
+  2. outside supplier invoice → stays in Review + "Review invoice from X"
+     task (number, amount, due date, attachment link); never marked
+     reviewed or paid;
+  3. review senders (Saad Javed) matched ONLY by configured address →
+     stays in Review + review task;
+  4. actionable outside order → review task; own-company mail (company
+     domains, incl. MobileSentrix) and non-actionable confirmations skipped;
+  5. promotion ≥85% sure by content → Ignored; less sure → left in Review.
+  Own-company mail never triggers 1, 2, 4 or 5. Without AI only rule 3 and
+  invoices the built-in readers recognise can fire; nothing is auto-ignored.
+- Tasks: dated "today" in the configured timezone (from the browser the first
+  time, editable); real deadline kept in `deadline`/`deadlineTime` and the
+  note; note has summary, details, Gmail link, attachment link
+  (`/api/automation/attachment/<mail>/<n>`), and why.
+- `lib/outbox.js`: fixed ids from rule + email or attachment hash, never
+  recreated (even after deletion). Open tabs collect them (`rules.js`); with
+  no tab open the server writes them into saved MYDAY; a save from a stale
+  tab gets unseen ones put back (`/api/state` PUT).
+- Every action is logged with its reason (feed.autoLog). Auto rules panel
+  (Automation → ⚙ Auto rules): switches, review senders, company domains,
+  promo hints, timezone, log, "Put back in Review" for auto-ignored mail.
+  Each email in Automation shows what was done automatically and why.
+- Everything else still waits for approval as before.
+- Tested: unit cases for every rule and edge (other "Saad" address, SICKW
+  receipt, unsure promo, no AI, forwarded duplicate attachment, stale save);
+  end to end with no tab open (server wrote 5 tasks), tab collection,
+  rescans (still 5), log and undo.
+
+### 5 October 2026 — read-only guarantee, dashboard quote, Phone Industry News
+- **Gmail stays read-only.** Audited: OAuth scope is `gmail.readonly`, every
+  Gmail call is a GET. Added a hard guard in `lib/google.js` that refuses any
+  Gmail path except reading profile, labels, message lists, one message
+  (`?format=full`) and attachments; tested 5 read paths allowed and 8 change
+  paths (send, modify, trash, batchModify, batchDelete, import, drafts,
+  filters) refused. "Ignored" is only a MYDAY status.
+- **Email content is data.** Every AI prompt (email reading, invoices, news,
+  assistant) says outside content is data and can't change rules or output;
+  emails are wrapped in <email> tags. Final decisions stay in plain code in
+  `rules.js`. New safeguard: a promotion-looking message that carries a
+  document (PDF/xlsx/csv) is never auto-ignored; it stays in Review.
+- Rule wording: bid tasks are "Review bid file: …" with the file named;
+  every automatic task note starts with "Summary:" (AI summary or snippet).
+- **Dashboard quote** (`lib/quotes.js`, `public/quote.js`): one short
+  original line per person per local day, theme rotates daily (progress,
+  discipline, business, learning, balance, focus, resilience, craft). Cached
+  per day; "New quote" up to QUOTE_REFRESHES_PER_DAY (5). Labelled
+  "AI-generated", never attributed. Without AI: MYDAY's own lines, labelled
+  as such. Uses the "AI assistant" permission.
+- **Phone Industry News** tab (`lib/news.js`, `public/news.js`, Team section
+  "news", owner on by default): public RSS/Atom feeds — Apple Newsroom and
+  developer releases, Google Android/Pixel/Security/Android Developers blogs,
+  Samsung US and global newsrooms, Lenovo (Motorola), iFixit guides and news,
+  9to5Mac, 9to5Google, MacRumors, Android Police, Android Authority,
+  GSMArena, SamMobile. Override with `<data>/news-sources.json`.
+  Polite: feeds only (no article scraping), ETag/If-Modified-Since, ≤ ~2
+  requests/hour per source, identifying user agent. Keeps 14 days; real
+  publication dates shown; last refresh shown; banner if sources unreachable
+  for 3h+. Brand and topic tags, Official / Confirmed report / Rumor (official
+  only from company sources; leak/"reportedly"/analyst wording → rumor).
+  Duplicate coverage grouped (8 tricky headline pairs tested, incl. leak vs
+  confirmation kept apart). AI summary in its own words + "why it may matter",
+  cached per story; NEWS_AI_ITEMS_PER_DAY (120), NEWS_AI=off to disable,
+  NEWS_REFRESH_MINUTES (60), NEWS_OFF=1 to stop the timer. Without AI, the
+  feed's own first sentence (≤30 words) is shown, credited.
+- Tested with pretend feeds (official, media, iFixit relative links, a broken
+  source, a 30-day-old and an off-topic story) and pretend AI: grouping,
+  filters, rumor/confirmed, source health, links open the original, staff
+  without the section get no tab and a 403.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

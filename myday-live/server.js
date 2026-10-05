@@ -20,6 +20,10 @@ const google = require("./lib/google");
 const { readDocument } = require("./lib/documents");
 const watcher = require("./lib/watcher");
 const ai = require("./lib/ai");
+const rulesLib = require("./lib/rules");
+const outbox = require("./lib/outbox");
+const newsLib = require("./lib/news");
+const quotes = require("./lib/quotes");
 
 /* What the AI needs to know about a person: their categories, so drafted
    tasks land somewhere real, and their name. */
@@ -168,7 +172,7 @@ async function serveStatic(req, res, urlPath) {
  */
 const ALL_SECTIONS = ["dashboard", "today", "tasks", "calendar", "projects",
   "auctions", "automation", "development", "notes", "goals", "habits", "settings",
-  "ai-chat", "ai-mail"];
+  "news", "ai-chat", "ai-mail"];
 /* The two AI switches ride along with the sections, so the owner turns them
    on per person in Settings → Team. Nobody but the owner has them until then:
    "ai-chat" is the assistant, "ai-mail" lets AI read their Gmail for tasks. */
@@ -261,6 +265,9 @@ const server = http.createServer(async (req, res) => {
       if (!isJson(req)) return json(res, 400, { error: "bad request" });
       let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
       if (typeof b.value !== "string") return json(res, 400, { error: "value must be a string" });
+      /* A tab that hasn't collected the latest automatic tasks yet would
+         save over them; put any it's missing back in. */
+      if (key === outbox.KEY) { try { b.value = outbox.inject(DATA_DIR, s.userId, b.value); } catch (e) {} }
       try { writeJson(stateFile(s.userId, key), { key, value: b.value, at: Date.now() }, key === "myday_proto_v1"); }
       catch (e) { return json(res, 500, { error: "write failed" }); }
       return json(res, 200, { ok: true });
@@ -783,6 +790,84 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { updated: n });
   }
 
+  /* ---- The dashboard's daily line ---- */
+  if ((p === "/api/quote" && req.method === "GET") || (p === "/api/quote/refresh" && req.method === "POST")) {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    try {
+      const day = rulesLib.localToday(rulesLib.read(DATA_DIR, me.id));
+      return json(res, 200, await quotes.get(DATA_DIR, me.id, { day, allowed: aiAllowed(me.username, "ai-chat"), refresh: p.endsWith("/refresh") }));
+    } catch (e) { return json(res, 500, { error: "couldn't make a quote" }); }
+  }
+  /* ---- Phone industry news ---- */
+  if (p === "/api/news" || p === "/api/news/refresh") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (sectionsFor(me.username).indexOf("news") < 0) return json(res, 403, { error: "The owner hasn't switched Phone Industry News on for you." });
+    if (p === "/api/news/refresh" && req.method === "POST") {
+      try { const r = await newsLib.refresh(DATA_DIR, { manual: true }); return json(res, 200, { ...r, ...newsLib.view(DATA_DIR) }); }
+      catch (e) { return json(res, 500, { error: String(e && e.message || e) }); }
+    }
+    if (req.method === "GET") return json(res, 200, newsLib.view(DATA_DIR));
+  }
+
+  /* ---- Automatic rules ---- */
+  if (p === "/api/automation/rules") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (req.method === "PUT") {
+      let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+      rulesLib.write(DATA_DIR, me.id, b);
+    }
+    const r = rulesLib.read(DATA_DIR, me.id);
+    const feed = watcher.readFeed(DATA_DIR, me.id);
+    return json(res, 200, { rules: r, zoneInUse: rulesLib.zone(r), today: rulesLib.localToday(r),
+      ownDomains: watcherSettings(me).ownDomains, aiOn: ai.configured() && aiAllowed(me.username, "ai-mail"),
+      log: (feed.autoLog || []).slice(0, 60).map((x) => ({ ...x, canUndo: x.action === "ignore" && !!(feed.items || []).find((i) => i.id === x.mailId && i.decidedBy === "auto") })) });
+  }
+  /* Tabs collect automatic tasks here (and tell us they're open). */
+  if (p === "/api/automation/outbox" && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    outbox.touch(me.id);
+    const tz = url.searchParams.get("tz") || "";
+    const r = rulesLib.read(DATA_DIR, me.id);
+    if (!r.timezone && rulesLib.validTz(tz)) rulesLib.write(DATA_DIR, me.id, { ...r, timezone: tz });
+    return json(res, 200, { tasks: outbox.pending(DATA_DIR, me.id).map((e) => e.task) });
+  }
+  if (p === "/api/automation/outbox/seen" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    return json(res, 200, { seen: outbox.markSeen(DATA_DIR, me.id, Array.isArray(b.ids) ? b.ids.map(String) : []) });
+  }
+  if (p === "/api/automation/undo" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const ok = watcher.undoIgnore(DATA_DIR, me.id, String(b.id || ""));
+    return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "nothing to undo" });
+  }
+  /* The attachment behind an automatic task's link, straight from Gmail. */
+  const attM = p.match(/^\/api\/automation\/attachment\/([^/]+)\/(\d+)$/);
+  if (attM && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return send(res, 401, "Sign in to MYDAY first, then open the link again.");
+    try {
+      const msg = await google.getMessage(DATA_DIR, me.id, decodeURIComponent(attM[1]));
+      const att = (msg.attachments || [])[Number(attM[2])];
+      if (!att || !att.attachmentId) return send(res, 404, "That attachment isn't there any more.");
+      const buf = await google.getAttachment(DATA_DIR, me.id, msg.id, att.attachmentId);
+      res.writeHead(200, {
+        "content-type": att.mimeType || "application/octet-stream",
+        "content-disposition": `inline; filename="${String(att.filename || "attachment").replace(/["\\\r\n]/g, "_")}"`,
+        "cache-control": "private, no-store",
+        "x-content-type-options": "nosniff",
+      });
+      return res.end(buf);
+    } catch (e) { return send(res, 502, "Couldn't fetch it from Gmail: " + String(e && e.message || e)); }
+  }
+
   /* Read emails in the list again with today's readers and the AI. */
   if (p === "/api/automation/reread" && req.method === "POST") {
     const me = userFromSession(sessionFor(req));
@@ -890,12 +975,13 @@ function watcherSettings(u) {
       paused: !!cfg.paused,
       knownSuppliers: cfg.knownSuppliers || [],
       supplierAddresses: cfg.supplierAddresses || {},
-      ownDomains: cfg.ownDomains || ["mobilesentrix.com"],
+      ownDomains: [...new Set([...(cfg.ownDomains || ["mobilesentrix.com"]), ...rulesLib.read(DATA_DIR, u.id).companyDomains])],
       ownNames: cfg.ownNames || ["mobilesentrix", "apt-ability"],
       people: cfg.people || {},
       mute: cfg.mute || DEFAULT_MUTE,
       ...aiOptsFor(u),
       ai: aiAllowed(u.username, "ai-mail"),
+      rules: rulesLib.read(DATA_DIR, u.id),
     };
 }
 watcher.start(DATA_DIR, {
@@ -903,6 +989,8 @@ watcher.start(DATA_DIR, {
   usersFile, readJson,
   settingsFor: watcherSettings,
 });
+
+if (process.env.NEWS_OFF !== "1") newsLib.start(DATA_DIR);
 
 server.listen(PORT, "127.0.0.1", () => {
   const n = (readJson(usersFile()) || { users: [] }).users.length;
