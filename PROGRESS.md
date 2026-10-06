@@ -265,6 +265,24 @@ sending mail, bidding, paying, deleting or changing anything in Gmail.
 - Tested: typed "DN Premium" on a Mannapov line, switched supplier and back,
   added — entry has "DN Premium", Setup has it after DNE.
 
+### 6 October 2026 — model names without colours, matched to Setup
+- Problem: the AI invoice reader put colours in model names ("iPhone 11
+  Red", "iPhone 13 Pro Alpine Green"), and logging added those as new Setup
+  models. It never saw the user's model list.
+- AI: `aiOptsFor` now passes each make's Setup models; the invoice prompt
+  says model only (no colour/storage/carrier/part number), with an example,
+  and to use Setup's exact spelling.
+- `public/models.js clean()`: removes part numbers, storage, carrier and —
+  from the end — colours (Apple names like Alpine Green, Sierra Blue,
+  Midnight, Black Titanium; Samsung/Google/common ones), then matches Setup's
+  spelling (exact, or the longest Setup model followed only by colour).
+  Colour goes into the entry's notes. Used in the invoice review ("✓ colour
+  … moved to notes · matches … in Setup"). 14 formats tested.
+- Cleanup: Captured Invoices shows "🧹 Tidy model names (N)" when entries
+  have a colour in the model; preview of every change, then renames entries
+  (colour → notes) and merges colour-named Setup models into the clean one
+  (sizes merged). Prices, grades, quantities untouched.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

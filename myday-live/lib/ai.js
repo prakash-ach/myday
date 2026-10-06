@@ -213,7 +213,8 @@ Reply with JSON only:
 Rules for lines:
 - One line per product line on the invoice. Devices only; shipping, tax, fees and premiums go in "fees", not lines.
 - oem: one of ${JSON.stringify(known)} if it fits, spelled exactly like that; otherwise as written.
-- model: without the maker's name, as a buyer would say it, e.g. "iPhone 13 Pro Max", "Galaxy S22 Ultra", "Pixel 7a".
+- model: the model ONLY — without the maker's name, colour, storage, carrier or part number. "APPLE IPHONE 13 PRO 256 ALPINE GREEN VZ MLR83LL/A" is model "iPhone 13 Pro". Never put a colour (Red, Midnight, Alpine Green, Black Titanium...) in the model.
+  Their catalog already has these models — when the line is one of them, use that exact spelling: ${JSON.stringify(doc.models || {}).slice(0, 6000)}
 - size: storage like "64GB", "128GB", "1TB"; "—" if none.
 - grade: exactly as the invoice grades it, uppercase, e.g. "A", "B+", "C", "D", "CPO", "NEW", "DNA", "DNB", "AA+". The grade is often a short code inside the description — after a dash, before the part number (e.g. "APPLE IPHONE 13 256 MIDNIGHT — DNC MLAH3LL/A" has grade "DNC"), or in its own column. Look for it on every line. Empty only if the line truly has none.
 - carrier: e.g. "Unlocked", "T-Mobile", "Verizon", "AT&T", empty if not stated.

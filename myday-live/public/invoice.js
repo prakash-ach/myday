@@ -240,13 +240,20 @@
     S.open = {
       item, doc, status: "won", supplier: m ? m.name : "", matchHow: m ? m.how : "", newName: doc.supplier || "",
       date: doc.date || item.date || (c && c.today) || "", reference: doc.reference || "", auction: doc.auction || "",
-      rows: doc.rows.map((r) => ({ on: true, raw: r.raw || "", rawGrade: r.grade || "", oem: r.oem || "", model: r.model || "", size: r.size || "—",
+      rows: doc.rows.map((r) => ({ on: true, raw: r.raw || "", rawGrade: r.grade || "", oem: r.oem || "", ...tidyModel(r), size: r.size || "—",
         carrier: r.carrier || "", qty: r.qty || 1, price: r.price || 0, issues: (r.issues || []).filter((x) => !/grade/.test(x)),
         confidence: r.confidence == null ? 1 : r.confidence, grade: "", gradeOk: false, gradeHow: "" })),
     };
     regrade();
     if (S.toast) { S.toast.remove(); S.toast = null; }
     draw();
+  }
+  /* "iPhone 13 Pro Alpine Green" → "iPhone 13 Pro", colour kept for the notes. */
+  function tidyModel(r) {
+    const M = window.MYDAYModels;
+    if (!M) return { model: r.model || "", colour: "", modelHow: "" };
+    const t = M.clean(r.oem, r.model || "");
+    return { model: t.model, colour: t.colour, modelHow: t.how };
   }
   const supObj = () => { const c = ctx(), O = S.open; return O && O.supplier ? ((c.state.catalog.suppliers || []).find((s) => s.name === O.supplier) || null) : null; };
   function regrade() {
@@ -322,6 +329,7 @@
           h("td", { style: "width:115px" }, h("input", { class: "mdi-in", value: r.oem, list: "mdi-makes", oninput: bind(r, "oem") })),
           h("td", null, h("input", { class: "mdi-in", value: r.model, oninput: bind(r, "model") }),
             r.raw ? h("div", { class: "raw", title: r.raw }, r.raw) : null,
+            r.modelHow ? h("div", { class: "raw", style: "color:var(--a)" }, "✓ " + r.modelHow) : null,
             notes.length ? h("div", { class: "iss" }, "⚠ " + notes.join(" · ")) : r.gradeHow && r.gradeOk ? h("div", { class: "raw", style: "color:var(--a)" }, "✓ " + r.gradeHow) : null),
           h("td", { style: "width:82px" }, h("input", { class: "mdi-in", value: r.size, oninput: bind(r, "size") })),
           h("td", { style: "width:140px" }, gradeCell(r)),
@@ -421,7 +429,7 @@
       id: rid(), date, supplier, oem: r.oem.trim(), model: r.model.trim(), size: r.size.trim() || "—",
       grade: (r.grade || r.rawGrade).trim() || "—", price: Math.round((+r.price || 0) * 100) / 100,
       qty: Math.max(1, Math.round(+r.qty || 1)), status: O.status, premium: null, tax: null, shipEach: null,
-      notes: [r.carrier, ref, doc.filename].filter(Boolean).join(" · "), createdAt: Date.now(),
+      notes: [r.colour, r.carrier, ref, doc.filename].filter(Boolean).join(" · "), createdAt: Date.now(),
       source: { kind: "invoice", mailId: O.item.id, sha: doc.sha, byAI: !!doc.byAI },
     }));
 

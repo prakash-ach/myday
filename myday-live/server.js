@@ -30,14 +30,18 @@ const quotes = require("./lib/quotes");
 function aiOptsFor(u) {
   let cats = { company: [], personal: [] };
   let makes = [];
+  const models = {};
   try {
     const st = readJson(stateFile(u.id, "myday_proto_v1"));
     let v = st && st.value;
     if (typeof v === "string") v = JSON.parse(v);
     if (v && v.categories) cats = { company: v.categories.company || [], personal: v.categories.personal || [] };
-    if (v && v.catalog && Array.isArray(v.catalog.oems)) makes = v.catalog.oems.map((o) => o && o.name).filter(Boolean);
+    if (v && v.catalog && Array.isArray(v.catalog.oems)) {
+      makes = v.catalog.oems.map((o) => o && o.name).filter(Boolean);
+      for (const o of v.catalog.oems) if (o && o.name) models[o.name] = (o.models || []).map((m) => m && m.name).filter(Boolean).slice(0, 150);
+    }
   } catch (e) {}
-  return { categories: cats, makes, userName: u.displayName || u.username };
+  return { categories: cats, makes, models, userName: u.displayName || u.username };
 }
 
 /* Senders that should never become a task. Overridable per account. */

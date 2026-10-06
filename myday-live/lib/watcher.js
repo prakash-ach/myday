@@ -73,7 +73,7 @@ async function readOne(dir, userId, id, options, run) {
               const r = await ai.readInvoice(dir, userId, {
                 filename: att.filename, from: msg.from, subject: msg.subject, text, images,
                 imageType: doc.kind === "image" ? (att.mimeType || "image/png") : "image/png",
-                makes: options.makes || [],
+                makes: options.makes || [], models: options.models || {},
               });
               if (r.isInvoice && r.lines.length) {
                 Object.assign(doc, {

@@ -100,6 +100,9 @@
         h("button", { class: "mdc-btn", disabled: S.busy || (S.data && S.data.fetching) || null, onclick: () => setSince(S.data && S.data.since) },
           S.data && S.data.fetching ? "Fetching…" : "✦ Fetch again since " + (S.data && S.data.since ? fmtDay(S.data.since) : "start")),
         h("button", { class: "mdc-btn", onclick: load }, "↻ Refresh"),
+        window.MYDAYModels && window.MYDAYModels.count() ? h("button", { class: "mdc-btn", style: "color:#C9A227;border-color:rgba(245,197,66,.5)",
+          title: "Some Auction entries have a colour in the model name", onclick: () => { window.MYDAYModels.tidyWindow(); setTimeout(draw, 800); } },
+          `🧹 Tidy model names (${window.MYDAYModels.count()})`) : null,
         S.msg ? h("span", { style: "font-size:12px;color:var(--faint)" }, S.msg) : null));
 
     const card = h("div", { class: "mdc-card" });
@@ -167,6 +170,7 @@
   /* The light on the menu item: blinking red and yellow while any wait. */
   let last = null;
   function announce(d) { last = d; try { window.__mydayInvoiceCount && window.__mydayInvoiceCount(d.toReview || 0); } catch (e) {} }
+  window.addEventListener("myday-tidied", () => draw());
   window.addEventListener("myday-invoices", (e) => { announce(e.detail); if (S.host) { S.data = e.detail; draw(); } });
   async function poll() {
     if (!ctx()) return;
