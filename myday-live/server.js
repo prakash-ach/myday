@@ -172,7 +172,7 @@ async function serveStatic(req, res, urlPath) {
  */
 const ALL_SECTIONS = ["dashboard", "today", "tasks", "calendar", "projects",
   "auctions", "automation", "development", "notes", "goals", "habits", "settings",
-  "news", "ai-chat", "ai-mail"];
+  "captured", "news", "ai-chat", "ai-mail"];
 /* The two AI switches ride along with the sections, so the owner turns them
    on per person in Settings → Team. Nobody but the owner has them until then:
    "ai-chat" is the assistant, "ai-mail" lets AI read their Gmail for tasks. */
@@ -790,6 +790,46 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { updated: n });
   }
 
+  /* ---- Captured invoices ---- */
+  if (p === "/api/automation/invoices" && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let r = rulesLib.read(DATA_DIR, me.id);
+    if (!r.capturedSince) {
+      // First time: start from last Friday, and fetch everything since then once.
+      r = rulesLib.write(DATA_DIR, me.id, { ...r, capturedSince: rulesLib.lastFriday(r) });
+      backfill(me);
+    }
+    const list = watcher.invoices(DATA_DIR, me.id, r.capturedSince, watcherSettings(me).ownDomains);
+    return json(res, 200, { invoices: list, toReview: list.filter((x) => x.status === "review").length,
+      since: r.capturedSince, fetching: backfilling.has(me.id) });
+  }
+  /* Change where Captured Invoices starts, and fetch from there. */
+  if (p === "/api/automation/captured-since" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req) || "{}"); } catch (e) { b = {}; }
+    const r = rulesLib.read(DATA_DIR, me.id);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || "") ? b.date : r.capturedSince || rulesLib.lastFriday(r);
+    if (Date.now() - Date.parse(date + "T12:00:00Z") > 92 * 864e5) return json(res, 400, { error: "Pick a date within the last three months." });
+    rulesLib.write(DATA_DIR, me.id, { ...r, capturedSince: date });
+    backfill(me);
+    return json(res, 200, { since: date, fetching: true });
+  }
+  if (p === "/api/automation/invoice" && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const r = watcher.invoice(DATA_DIR, me.id, url.searchParams.get("id") || "", url.searchParams.get("sha") || "");
+    return r ? json(res, 200, r) : json(res, 404, { error: "That invoice isn't in MYDAY any more." });
+  }
+  if (p === "/api/automation/invoice-status" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const ok = watcher.setInvoiceStatus(DATA_DIR, me.id, String(b.id || ""), String(b.sha || ""), b.status === "dismissed" ? "dismissed" : "review");
+    return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "couldn't find that invoice" });
+  }
+
   /* ---- The dashboard's daily line ---- */
   if ((p === "/api/quote" && req.method === "GET") || (p === "/api/quote/refresh" && req.method === "POST")) {
     const me = userFromSession(sessionFor(req));
@@ -963,6 +1003,21 @@ setInterval(() => {
 }, 36e5).unref();
 
 /* Keep reading in the background, whether anyone is looking or not. */
+/* Fetch every email with an attachment since the Captured Invoices start
+   date, once at a time per person, in the background. Reads only. It
+   doesn't make automatic tasks for these older emails — that's for mail
+   arriving from now on. */
+const backfilling = new Set();
+function backfill(u) {
+  if (backfilling.has(u.id) || !google.readTokens(DATA_DIR, u.id)) return;
+  const since = rulesLib.read(DATA_DIR, u.id).capturedSince;
+  if (!since) return;
+  backfilling.add(u.id);
+  watcher.sweep(DATA_DIR, u.id, { ...watcherSettings(u), rules: null, since, attachmentsOnly: true, max: 150, aiMax: 80, invoiceMax: 60 })
+    .catch((e) => console.log("[captured] " + (e && e.message || e)))
+    .finally(() => backfilling.delete(u.id));
+}
+
 /* How the watcher reads one person's mail, from what they've set. */
 function watcherSettings(u) {
     const stored = readJson(stateFile(u.id, "myday_automation"));

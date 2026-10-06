@@ -176,10 +176,18 @@ async function listMessages(dir, userId, { label, query, max = 10 } = {}) {
   if (label) parts.push("label:" + label);
   if (query) parts.push(query);
   const q = parts.join(" ");
-  const p = "/gmail/v1/users/me/messages?maxResults=" + Math.min(50, max)
-    + (q ? "&q=" + encodeURIComponent(q) : "");
-  const r = await api(dir, userId, p);
-  return r.messages || [];
+  /* Page through when more than one page is wanted (a backfill), up to 200. */
+  const want = Math.min(200, Math.max(1, max));
+  const out = [];
+  let page = "";
+  do {
+    const p = "/gmail/v1/users/me/messages?maxResults=" + Math.min(50, want - out.length)
+      + (q ? "&q=" + encodeURIComponent(q) : "") + (page ? "&pageToken=" + encodeURIComponent(page) : "");
+    const r = await api(dir, userId, p);
+    out.push(...(r.messages || []));
+    page = r.nextPageToken || "";
+  } while (page && out.length < want);
+  return out;
 }
 
 const b64 = (s) => Buffer.from(String(s || "").replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");

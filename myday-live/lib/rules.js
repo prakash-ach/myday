@@ -28,6 +28,7 @@ const DEFAULTS = {
   companyDomains: [],                 // added to the Automation settings' own domains
   promoHints: ["sickw.com"],          // senders known for promotions — a hint, judged by content
   sure: { bids: 0.7, invoices: 0.7, orders: 0.75, promotions: 0.85 },
+  capturedSince: "",                  // Captured Invoices starts here (YYYY-MM-DD)
 };
 
 const file = (dir, userId) => path.join(dir, "rules-" + userId + ".json");
@@ -54,6 +55,7 @@ function write(dir, userId, rules) {
     companyDomains: clean(rules.companyDomains).map((d) => d.replace(/^@/, "")),
     promoHints: clean(rules.promoHints),
     sure: { ...DEFAULTS.sure },
+    capturedSince: /^\d{4}-\d{2}-\d{2}$/.test(String(rules.capturedSince || "")) ? rules.capturedSince : "",
   };
   fs.mkdirSync(dir, { recursive: true });
   const tmp = file(dir, userId) + ".tmp";
@@ -242,4 +244,12 @@ function buildTask(item, ai, d, rules, opts) {
   };
 }
 
-module.exports = { read, write, decide, buildTask, localToday, zone, validTz, idFor, addressOf, isOwn, DEFAULTS };
+/* The Friday before today (a week back if today is Friday), in your timezone. */
+function lastFriday(rules) {
+  const d = new Date(localToday(rules) + "T12:00:00Z");
+  const back = ((d.getUTCDay() - 5 + 7) % 7) || 7;
+  d.setUTCDate(d.getUTCDate() - back);
+  return d.toISOString().slice(0, 10);
+}
+
+module.exports = { lastFriday, read, write, decide, buildTask, localToday, zone, validTz, idFor, addressOf, isOwn, DEFAULTS };

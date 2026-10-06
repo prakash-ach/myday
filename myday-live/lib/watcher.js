@@ -133,6 +133,12 @@ async function readOne(dir, userId, id, options, run) {
            ownDomains: options.ownDomains, promoHints: options.rules && options.rules.promoHints });
       aiSummary = r.summary || null;
       classify = r.classify || null;
+      /* A bid sheet lists lots to bid on; it isn't a bill. If the AI's
+         invoice reader found "lines" in one, they don't belong in Captured
+         Invoices. (The built-in ONM/Rexi readers are left alone.) */
+      if (classify && classify.type === "auction_bid_file" && classify.confidence >= 0.7) {
+        for (const d of documents) if (d.byAI && d.rows) { delete d.rows; d.byAI = false; d.bidFile = true; d.issues = (d.issues || []).filter((x) => !/^AI:|adds to/.test(x)); }
+      }
       const keep = p.tasks.filter((t) => t.kind === "payment" && t.amount);
       const extra = r.tasks.filter((t) => !(keep.length && /\bpay\b|invoice|payment/i.test(t.title)));
       tasks = [...keep, ...extra];
@@ -211,7 +217,9 @@ async function sweep(dir, userId, options = {}) {
   const run = newRun(feed);
   const label = options.label || "";
   const back = Math.min(30, Math.max(0, Number(options.lookBackDays) || 0));
-  const max = back ? Math.min(60, options.max || 40) : options.max || 20;
+  const since = /^\d{4}-\d{2}-\d{2}$/.test(options.since || "") ? options.since : "";
+  const catchUp = back || since;
+  const max = since ? Math.min(200, options.max || 150) : back ? Math.min(60, options.max || 40) : options.max || 20;
 
   /* A label that doesn't exist matches nothing, and Gmail gives no hint
      that's why. Rather than read zero messages forever, check it once
@@ -233,7 +241,10 @@ async function sweep(dir, userId, options = {}) {
   try {
     /* Regular passes only need what's arrived since the last one. */
     const last = feed.stats && feed.stats.lastRun;
-    const query = back ? `newer_than:${back}d`
+    // Gmail's "after:" is a day boundary in Pacific time; go a day early and let the list filter.
+    const dayBefore = since ? new Date(Date.parse(since + "T12:00:00Z") - 864e5).toISOString().slice(0, 10).replace(/-/g, "/") : "";
+    const query = since ? `after:${dayBefore}${options.attachmentsOnly ? " has:attachment" : ""}`
+      : back ? `newer_than:${back}d`
       : last && Date.now() - last < 36 * 3600e3 ? "newer_than:" + Math.max(1, Math.ceil((Date.now() - last) / 864e5)) + "d" : "";
     ids = await google.listMessages(dir, userId, { label: useLabel, query, max });
   } catch (e) {
@@ -244,7 +255,7 @@ async function sweep(dir, userId, options = {}) {
 
   const inList = new Set((feed.items || []).map((x) => x.id));
   for (const { id } of ids) {
-    if (back ? inList.has(id) : run.seen.has("msg:" + id)) continue;
+    if (catchUp ? inList.has(id) : run.seen.has("msg:" + id)) continue;
     let item;
     try { item = await readOne(dir, userId, id, options, run); }
     catch (e) { run.problems.push({ id, error: String(e && e.message) }); continue; }
@@ -256,8 +267,8 @@ async function sweep(dir, userId, options = {}) {
   feed.items = [...added, ...(feed.items || [])].slice(0, 300);
   finish(dir, userId, feed, run, {
     looked: ids.length, added: added.length, ms: Date.now() - started,
-    note: back ? `looked back ${back} days` : labelNote,
-    stats: back ? {} : { lastRun: Date.now(), label: useLabel, labelNote, tookMs: Date.now() - started, looked: ids.length, added: added.length },
+    note: since ? `fetched invoices since ${since}` : back ? `looked back ${back} days` : labelNote,
+    stats: catchUp ? {} : { lastRun: Date.now(), label: useLabel, labelNote, tookMs: Date.now() - started, looked: ids.length, added: added.length },
   });
   return { added, problems: run.problems, stats: feed.stats };
 }
@@ -293,6 +304,79 @@ async function reread(dir, userId, ids, options = {}) {
   }
   finish(dir, userId, feed, run, { looked: done.length, added: 0, ms: Date.now() - started, note: `read ${done.length} again`, stats: {} });
   return { items: done, problems: run.problems };
+}
+
+/* Every invoice MYDAY has read lines from, newest first — including ones in
+   emails you've already approved or ignored, so nothing slips past. */
+const refKey = (inv) => {
+  const r = String(inv.reference || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!r) return "sha:" + inv.sha;
+  // Short numbers like "1001" could clash between suppliers; keep those per sender.
+  return r.length >= 4 ? "ref:" + r : "ref:" + r + "@" + (String(inv.from).match(/@([^>\s]+)/) || [])[1];
+};
+/* One row per invoice number, however many times it arrived (re-sent,
+   forwarded, PDF and spreadsheet). If any copy was added to the Auction
+   table, the invoice counts as added. Only from `since` on, if given. */
+function invoices(dir, userId, since, ownDomains) {
+  const own = (from) => { const d = ((String(from).match(/@([^>\s]+)/) || [])[1] || "").toLowerCase();
+    return (ownDomains || []).some((o) => o && (d === o.toLowerCase() || d.endsWith("." + o.toLowerCase()))); };
+  const all = allInvoices(dir, userId).filter((x) => !since || (x.emailDate || "") >= since);
+  const groups = new Map();
+  for (const inv of all) { const k = refKey(inv); (groups.get(k) || groups.set(k, []).get(k)).push(inv); }
+  const out = [];
+  for (const copies of groups.values()) {
+    // Show the copy the supplier sent, not a colleague's forward of it.
+    const pick = copies.slice().sort((a, b) => (own(a.from) - own(b.from)) || (b.lines - a.lines) || ((a.seenAt || 0) - (b.seenAt || 0)))[0];
+    const logged = copies.map((c) => c.logged).filter(Boolean).sort((a, b) => a.at - b.at)[0] || null;
+    const status = logged ? "added" : copies.every((c) => c.status === "dismissed") ? "dismissed" : "review";
+    out.push({ ...pick, status, logged, copies: copies.length,
+      copyFrom: copies.length > 1 ? [...new Set(copies.map((c) => c.from))] : undefined,
+      firstReceived: copies.reduce((m, c) => (c.emailDate && (!m || c.emailDate < m) ? c.emailDate : m), "") });
+  }
+  return out.sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
+}
+function allInvoices(dir, userId) {
+  const feed = readFeed(dir, userId);
+  const out = [];
+  for (const item of feed.items || []) {
+    for (const d of item.documents || []) {
+      if (!d.rows || !d.rows.length) continue;
+      out.push({
+        mailId: item.id, sha: d.sha, from: item.from, subject: item.subject, emailDate: item.date, seenAt: item.seenAt,
+        filename: d.filename, supplier: d.supplier || item.party || "", reference: d.reference || "", auction: d.auction || "",
+        invoiceDate: d.date || "", total: d.total || d.rows.reduce((n, r) => n + (Number(r.amount) || (r.qty || 0) * (r.price || 0)), 0),
+        qty: d.rows.reduce((n, r) => n + (Number(r.qty) || 0), 0), lines: d.rows.length, byAI: !!d.byAI,
+        flagged: d.rows.filter((r) => (r.confidence != null && r.confidence < 0.8)).length,
+        status: d.logged ? "added" : d.dismissed ? "dismissed" : "review", logged: d.logged || null, dismissed: d.dismissed || null,
+      });
+    }
+  }
+  return out.sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
+}
+function invoice(dir, userId, id, sha) {
+  const feed = readFeed(dir, userId);
+  const item = (feed.items || []).find((x) => x.id === id);
+  const doc = item && (item.documents || []).find((d) => d.sha === sha && d.rows && d.rows.length);
+  if (!doc) return null;
+  // Was this invoice number already added from another copy?
+  const me = { reference: doc.reference, sha: doc.sha, from: item.from };
+  const twin = allInvoices(dir, userId).find((x) => x.logged && refKey(x) === refKey(me) && !(x.mailId === id && x.sha === sha));
+  return { item: { id: item.id, from: item.from, subject: item.subject, date: item.date, threadId: item.threadId }, doc,
+    alreadyAdded: twin ? { at: twin.logged.at, count: twin.logged.count, from: twin.from } : null };
+}
+function setInvoiceStatus(dir, userId, id, sha, status) {
+  const feed = readFeed(dir, userId);
+  const item = (feed.items || []).find((x) => x.id === id);
+  const doc = item && (item.documents || []).find((d) => d.sha === sha);
+  if (!doc) return false;
+  // Every copy of the same invoice number gets the same answer.
+  const key = refKey({ reference: doc.reference, sha: doc.sha, from: item.from });
+  for (const it of feed.items || []) for (const d of it.documents || []) {
+    if (!d.rows || !d.rows.length || refKey({ reference: d.reference, sha: d.sha, from: it.from }) !== key) continue;
+    if (status === "dismissed") d.dismissed = { at: Date.now() }; else delete d.dismissed;
+  }
+  writeFeed(dir, userId, feed);
+  return true;
 }
 
 /* Remember an invoice was logged to Auctions. */
@@ -350,4 +434,4 @@ function undoIgnore(dir, userId, id) {
   return true;
 }
 
-module.exports = { sweep, reread, markLogged, undoIgnore, readFeed, writeFeed, start };
+module.exports = { sweep, reread, markLogged, undoIgnore, invoices, invoice, setInvoiceStatus, readFeed, writeFeed, start };

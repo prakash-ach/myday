@@ -71,6 +71,9 @@
   .mdi-tabs button{border:1px solid var(--line);background:var(--glass);border-radius:999px;padding:5px 12px;font-size:12px;color:var(--muted)}
   .mdi-tabs button.on{border-color:var(--a);color:var(--a);font-weight:700}
   input[type=checkbox].mdi-ck{width:16px;height:16px;accent-color:var(--a)}
+  .mdi-new{margin:10px 18px 0;padding:11px 13px;border-radius:12px;background:rgba(var(--a-rgb),.08);border:1px dashed rgba(var(--a-rgb),.5);font-size:12.5px}
+  .mdi-new .mdi-row{align-items:center}
+  .mdi select.mdi-in{padding:5px 6px}
   `;
 
   function h(tag, attrs, ...kids) {
@@ -101,151 +104,233 @@
     return el;
   }
 
-  /* ---------- the feed ---------- */
-  async function loadFeed() {
-    try {
-      const r = await fetch("/api/automation/feed", { credentials: "same-origin" });
-      if (!r.ok) return null;
-      S.feed = await r.json();
-      return S.feed;
-    } catch (e) { return null; }
-  }
-  const invoicesIn = (item) => (item.documents || []).filter((d) => d.rows && d.rows.length);
-  function pending(feed) {
-    const out = [], skip = dismissed();
-    for (const item of (feed && feed.items) || []) {
-      if (item.decided === "ignored") continue;
-      for (const d of invoicesIn(item)) {
-        const k = item.id + ":" + d.sha;
-        if (!d.logged && !skip.has(k)) out.push({ item, doc: d, key: k });
-      }
+  /* ---------- matching to YOUR suppliers and grades ----------
+   * Suppliers in Auctions → Setup are named like "T-Mobile Via ONM". An
+   * invoice is matched to one by, in order: a match you confirmed before
+   * (by the invoice's supplier name or the sender's domain); the part after
+   * "Via" (ONM, MNVP, B-Stock) appearing in the sender, invoice or file
+   * name; a few known aliases (Mannapov is MNVP); the full name.
+   * Each line's grade is then turned into one of that supplier's grades. */
+  const norm = (s) => String(s || "").toLowerCase().replace(/\bplus\b/g, "+").replace(/[^a-z0-9+]/g, "");
+  const ALIASES = [["mannapov", "mnvp"], ["bstock", "bstock"], ["onlinemobile", "onm"]];
+  const channelOf = (name) => { const p = String(name || "").split(/\s+via\s+/i); return p.length > 1 ? norm(p[1]) : ""; };
+  const domainOf = (from) => ((String(from || "").match(/@([^>\s]+)/) || [])[1] || "").toLowerCase();
+  const learnedMap = () => { const c = ctx(); return (c && c.state && c.state.prefs && c.state.prefs.invoiceMap) || { suppliers: {}, grades: {} }; };
+
+  function matchSupplier(doc, item) {
+    const c = ctx();
+    const sups = (c && c.state && c.state.catalog && c.state.catalog.suppliers) || [];
+    const L = learnedMap().suppliers || {};
+    const dom = domainOf(item.from);
+    for (const k of [norm(doc.supplier), dom && "@" + dom]) {
+      if (k && L[k] && sups.some((s) => s.name === L[k])) return { name: L[k], how: "you matched this sender before" };
     }
-    return out;
+    const hay = norm([doc.supplier, item.from, doc.filename, item.subject].join(" "));
+    let hay2 = hay;
+    for (const [w, ch] of ALIASES) if (hay.includes(w)) hay2 += "|" + ch;
+    for (const s of sups) {
+      const ch = channelOf(s.name);
+      if (ch.length >= 3 && hay2.includes(ch)) return { name: s.name, how: `"${s.name.split(/\s+via\s+/i)[1]}" appears in the sender or invoice` };
+    }
+    for (const s of sups) if (norm(s.name).length >= 4 && hay.includes(norm(s.name))) return { name: s.name, how: "same name as on the invoice" };
+    return null;
+  }
+
+  function prefixOf(grades) {
+    const groups = {};
+    for (const g of grades.map(norm)) { if (g.length >= 3) (groups[g.slice(0, 2)] = groups[g.slice(0, 2)] || []).push(g); }
+    let best = "";
+    for (const list of Object.values(groups)) {
+      if (list.length < 2) continue;
+      let p = list[0];
+      for (const g of list) while (!g.startsWith(p)) p = p.slice(0, -1);
+      if (p.length > best.length) best = p;
+    }
+    return best;
+  }
+  const SAME_GRADE = [["sealed", "newsealed", "brandnew", "nib", "factorysealed"], ["new", "brandnew"], ["cpo", "certifiedpreowned"]];
+  function mapGrade(raw, sup) {
+    const r = String(raw || "").trim();
+    if (!sup || !(sup.grades || []).length) return { grade: r.toUpperCase(), ok: !!r, how: "" };
+    const G = sup.grades;
+    const learned = (learnedMap().grades || {})[sup.name] || {};
+    const nr = norm(r.replace(/\b(grade|condition|cond)\b/gi, ""));
+    if (learned[nr] && G.includes(learned[nr])) return { grade: learned[nr], ok: true, how: "as you set before" };
+    if (!nr) return { grade: "", ok: false, how: "no grade on the invoice" };
+    let g = G.find((x) => norm(x) === nr);
+    if (g) return { grade: g, ok: true, how: g === r ? "" : `"${r}" is ${g}` };
+    const p = prefixOf(G);
+    if (p) { g = G.find((x) => norm(x) === p + nr); if (g) return { grade: g, ok: true, how: `"${r}" is ${g}` }; }
+    for (const set of SAME_GRADE) if (set.includes(nr)) { g = G.find((x) => set.includes(norm(x))); if (g) return { grade: g, ok: true, how: `"${r}" is ${g}` }; }
+    return { grade: "", ok: false, how: `"${r}" isn't one of ${sup.name}'s grades — pick one` };
   }
 
   /* ---------- "I found an invoice" ---------- */
-  function showToast(list) {
-    if (S.toast || S.open || !list.length) return;
-    const { item, doc, key } = list[0];
-    const total = doc.total || doc.rows.reduce((n, r) => n + (r.amount || r.qty * r.price || 0), 0);
-    const more = list.length - 1;
+  async function list() {
+    try {
+      const r = await fetch("/api/automation/invoices", { credentials: "same-origin" });
+      return r.ok ? await r.json() : null;
+    } catch (e) { return null; }
+  }
+  function showToast(waiting) {
+    if (S.toast || S.open || !waiting.length) return;
+    const inv = waiting[0], key = inv.mailId + ":" + inv.sha, more = waiting.length - 1;
     const close = () => { if (S.toast) { S.toast.remove(); S.toast = null; } };
     S.toast = themed(h("div", { class: "mdi-toast", role: "status" },
-      h("b", null, h("span", { class: "mdi-ic" }, "🧾"), "Invoice found", doc.byAI ? h("span", { class: "mdi-tag" }, "read by AI") : null),
-      h("p", null, `${doc.supplier || item.from}${doc.reference ? " · " + doc.reference : ""} — ${doc.rows.length} line${doc.rows.length === 1 ? "" : "s"}, ${money(total)}. Log it to Auctions?`
+      h("b", null, h("span", { class: "mdi-ic" }, "🧾"), "Invoice captured", inv.byAI ? h("span", { class: "mdi-tag" }, "read by AI") : null),
+      h("p", null, `${inv.supplier || inv.from}${inv.reference ? " · " + inv.reference : ""} — ${inv.qty} devices, ${money(inv.total)}. Add it to the Auction table?`
         + (more ? ` (${more} more waiting)` : "")),
       h("div", { class: "mdi-row" },
-        h("button", { class: "mdi-pri", onclick: () => { close(); open(item.id, doc.sha); } }, "Review & log"),
-        h("button", { class: "mdi-sec", onclick: () => { S.asked.add(key); close(); } }, "Later"),
-        h("button", { class: "mdi-sec", title: "Don't ask about this invoice again", onclick: () => { dismiss(key); close(); } }, "Don't ask"))));
+        h("button", { class: "mdi-pri", onclick: () => { close(); open(inv.mailId, inv.sha); } }, "View invoice"),
+        h("button", { class: "mdi-sec", onclick: () => { S.asked.add(key); close(); } }, "Later"))));
     document.body.appendChild(S.toast);
   }
   async function check() {
     if (!ctx() || S.open) return;
-    const feed = await loadFeed();
-    if (!feed) return;
-    showToast(pending(feed).filter((x) => !S.asked.has(x.key)));
+    const d = await list();
+    if (!d) return;
+    try { window.dispatchEvent(new CustomEvent("myday-invoices", { detail: d })); } catch (e) {}
+    showToast(d.invoices.filter((x) => x.status === "review" && !S.asked.has(x.mailId + ":" + x.sha)));
   }
 
-  /* ---------- review & log ---------- */
+  /* ---------- view invoice → add to the Auction table ---------- */
   async function open(itemId, sha) {
-    const feed = await loadFeed();
-    const item = feed && (feed.items || []).find((x) => x.id === itemId);
-    if (!item) { toastMsg("That email isn't in the Automation list any more."); return; }
-    const docs = invoicesIn(item);
-    if (!docs.length) { toastMsg("No invoice lines were read from that email."); return; }
-    const c = ctx();
+    let d = null;
+    try {
+      const r = await fetch(`/api/automation/invoice?id=${encodeURIComponent(itemId)}&sha=${encodeURIComponent(sha || "")}`, { credentials: "same-origin" });
+      d = await r.json();
+      if (!r.ok) { toastMsg(d.error || "Couldn't open that invoice."); return; }
+    } catch (e) { toastMsg("Couldn't reach the server."); return; }
+    if (!sha) {   // older callers pass only the email: take its first invoice
+      const all = await list();
+      const first = all && all.invoices.find((x) => x.mailId === itemId);
+      if (first && first.sha !== d.doc.sha) return open(itemId, first.sha);
+    }
+    const c = ctx(), { item, doc } = d;
+    if (d.alreadyAdded && !doc.logged) doc.logged = { ...d.alreadyAdded, twin: true };
+    const m = matchSupplier(doc, item);
     S.open = {
-      item, docs, at: Math.max(0, docs.findIndex((d) => d.sha === sha)),
-      status: "won",
-      edits: docs.map((d) => ({
-        supplier: d.supplier || "", date: d.date || item.date || (c && c.today) || "",
-        reference: d.reference || "", auction: d.auction || "",
-        rows: d.rows.map((r) => ({ on: true, oem: r.oem || "", model: r.model || "", size: r.size || "—", grade: r.grade || "",
-          carrier: r.carrier || "", qty: r.qty || 1, price: r.price || 0, amount: r.amount, raw: r.raw || "",
-          issues: r.issues || [], confidence: r.confidence == null ? 1 : r.confidence })),
-      })),
+      item, doc, status: "won", supplier: m ? m.name : "", matchHow: m ? m.how : "", newName: doc.supplier || "",
+      date: doc.date || item.date || (c && c.today) || "", reference: doc.reference || "", auction: doc.auction || "",
+      rows: doc.rows.map((r) => ({ on: true, raw: r.raw || "", rawGrade: r.grade || "", oem: r.oem || "", model: r.model || "", size: r.size || "—",
+        carrier: r.carrier || "", qty: r.qty || 1, price: r.price || 0, issues: (r.issues || []).filter((x) => !/grade/.test(x)),
+        confidence: r.confidence == null ? 1 : r.confidence, grade: "", gradeOk: false, gradeHow: "" })),
     };
+    regrade();
     if (S.toast) { S.toast.remove(); S.toast = null; }
     draw();
   }
+  const supObj = () => { const c = ctx(), O = S.open; return O && O.supplier ? ((c.state.catalog.suppliers || []).find((s) => s.name === O.supplier) || null) : null; };
+  function regrade() {
+    const sup = supObj();
+    for (const r of S.open.rows) { const g = mapGrade(r.rawGrade, sup); r.grade = g.grade; r.gradeOk = g.ok; r.gradeHow = g.how; }
+  }
   function close() { if (S.el.back) S.el.back.remove(); S.el.back = null; S.open = null; }
+
+  function addSupplier(name) {
+    const c = ctx(), O = S.open; if (!c || !name.trim()) return;
+    const grades = [...new Set(O.rows.map((r) => String(r.rawGrade || r.grade || "").trim().toUpperCase()).filter(Boolean))];
+    c.setCatalog((cat) => {
+      const sups = (cat.suppliers || []).slice();
+      if (!sups.some((s) => s.name.toLowerCase() === name.trim().toLowerCase())) sups.push({ id: rid(), name: name.trim(), grades: grades.length ? grades : ["A", "B", "C"] });
+      return { ...cat, suppliers: sups };
+    });
+    setTimeout(() => { O.supplier = name.trim(); O.matchHow = "added just now"; regrade(); draw(); }, 50);
+  }
 
   function draw() {
     const O = S.open; if (!O) return;
-    const doc = O.docs[O.at], E = O.edits[O.at];
-    const c = ctx();
+    const c = ctx(), doc = O.doc;
     const cat = (c && c.state && c.state.catalog) || { suppliers: [], oems: [] };
-    const suppliers = [...new Set([...(cat.suppliers || []).map((s) => s.name), ...((c && c.state && c.state.entries) || []).map((e) => e.supplier)].filter(Boolean))];
+    const sups = cat.suppliers || [];
+    const sup = supObj();
     const makes = [...new Set([...(cat.oems || []).map((o) => o.name), "Apple", "Samsung", "Google", "Motorola", "OnePlus", "LG", "TCL"])];
 
-    const on = E.rows.filter((r) => r.on);
+    const on = O.rows.filter((r) => r.on);
     const qty = on.reduce((n, r) => n + (+r.qty || 0), 0);
     const lines = on.reduce((n, r) => n + (+r.qty || 0) * (+r.price || 0), 0);
-    const allLines = E.rows.reduce((n, r) => n + (+r.qty || 0) * (+r.price || 0), 0);
+    const allLines = O.rows.reduce((n, r) => n + (+r.qty || 0) * (+r.price || 0), 0);
     const fees = (doc.fees || []).reduce((n, f) => n + (f.amount || 0), 0);
     const total = doc.total;
     const match = total ? Math.abs(allLines + fees - total) <= 1 : null;
-    const flagged = E.rows.filter((r) => r.on && (r.confidence < 0.8 || !r.model || !r.price)).length;
+    const needGrade = on.filter((r) => sup && !r.grade).length;
+    const flagged = on.filter((r) => r.confidence < 0.8 || !r.model || !r.price || (sup && !r.grade)).length;
+    const bind = (r, k, num) => (e) => { r[k] = num ? Number(e.target.value) : e.target.value; if (num) drawSoon(); };
+    const dl = (id, l) => h("datalist", { id }, l.map((x) => h("option", { value: x })));
 
-    const bind = (r, k, num) => (e) => { r[k] = num ? Number(e.target.value) : e.target.value; if (num || k === "on") drawSoon(); };
-    const meta = (label, key, extra) => h("div", null, h("label", null, label),
-      h("input", { class: "mdi-in", value: E[key], ...(extra || {}), oninput: (e) => { E[key] = e.target.value; } }));
+    const gradeCell = (r) => {
+      if (sup && (sup.grades || []).length) {
+        return h("div", null,
+          h("select", { class: "mdi-in", onchange: (e) => { r.grade = e.target.value; r.gradeOk = !!r.grade; r.gradeHow = r.grade ? "you picked" : ""; draw(); } },
+            h("option", { value: "" }, "— pick —"), sup.grades.map((g) => h("option", { value: g, selected: r.grade === g ? true : null }, g))),
+          r.rawGrade && r.rawGrade !== r.grade ? h("div", { class: "raw" }, "invoice: " + r.rawGrade) : null);
+      }
+      return h("input", { class: "mdi-in", value: r.grade || r.rawGrade, oninput: (e) => { r.grade = e.target.value; r.rawGrade = e.target.value; } });
+    };
 
-    const dl = (id, list) => h("datalist", { id }, list.map((x) => h("option", { value: x })));
     const table = h("table", null,
-      h("thead", null, h("tr", null, ["", "Make", "Model", "Size", "Grade", "Qty", "Unit price", "Line total", ""].map((x, i) =>
-        h("th", { class: i >= 5 && i <= 7 ? "mdi-num" : "" }, i === 0 ? h("input", { type: "checkbox", class: "mdi-ck", title: "All / none",
-          checked: E.rows.every((r) => r.on), onchange: (e) => { E.rows.forEach((r) => (r.on = e.target.checked)); draw(); } }) : x)))),
-      h("tbody", null, E.rows.map((r) => {
-        const flag = r.on && (r.confidence < 0.8 || !r.model || !r.price);
-        return h("tr", { class: (r.on ? "" : "off ") + (flag ? "flag" : "") },
+      h("thead", null, h("tr", null, ["", "Make", "Model", "Size", sup ? `Grade (${sup.name})` : "Grade", "Qty", "Unit price", "Line total"].map((x, i) =>
+        h("th", { class: i >= 5 ? "mdi-num" : "" }, i === 0 ? h("input", { type: "checkbox", class: "mdi-ck", title: "All / none",
+          checked: O.rows.every((r) => r.on), onchange: (e) => { O.rows.forEach((r) => (r.on = e.target.checked)); draw(); } }) : x)))),
+      h("tbody", null, O.rows.map((r) => {
+        const bad = r.on && (r.confidence < 0.8 || !r.model || !r.price || (sup && !r.grade));
+        const notes = [...r.issues, sup && !r.grade ? r.gradeHow || "pick a grade" : null].filter(Boolean);
+        return h("tr", { class: (r.on ? "" : "off ") + (bad ? "flag" : "") },
           h("td", null, h("input", { type: "checkbox", class: "mdi-ck", checked: r.on, onchange: (e) => { r.on = e.target.checked; draw(); } })),
-          h("td", { style: "width:120px" }, h("input", { class: "mdi-in", value: r.oem, list: "mdi-makes", oninput: bind(r, "oem") })),
+          h("td", { style: "width:115px" }, h("input", { class: "mdi-in", value: r.oem, list: "mdi-makes", oninput: bind(r, "oem") })),
           h("td", null, h("input", { class: "mdi-in", value: r.model, oninput: bind(r, "model") }),
             r.raw ? h("div", { class: "raw", title: r.raw }, r.raw) : null,
-            r.issues.length ? h("div", { class: "iss" }, "⚠ " + r.issues.join(" · ")) : null),
-          h("td", { style: "width:84px" }, h("input", { class: "mdi-in", value: r.size, oninput: bind(r, "size") })),
-          h("td", { style: "width:70px" }, h("input", { class: "mdi-in", value: r.grade, oninput: bind(r, "grade") })),
-          h("td", { style: "width:64px" }, h("input", { class: "mdi-in mdi-num", type: "number", min: "1", value: r.qty, oninput: bind(r, "qty", true) })),
-          h("td", { style: "width:100px" }, h("input", { class: "mdi-in mdi-num", type: "number", step: "0.01", value: r.price, oninput: bind(r, "price", true) })),
-          h("td", { class: "mdi-num", style: "width:96px;padding-top:10px" }, money((+r.qty || 0) * (+r.price || 0))),
-          h("td", { style: "width:20px;padding-top:9px;color:var(--faint)", title: r.carrier ? "Carrier: " + r.carrier : "" }, r.carrier ? "📶" : ""));
+            notes.length ? h("div", { class: "iss" }, "⚠ " + notes.join(" · ")) : r.gradeHow && r.gradeOk ? h("div", { class: "raw", style: "color:var(--a)" }, "✓ " + r.gradeHow) : null),
+          h("td", { style: "width:82px" }, h("input", { class: "mdi-in", value: r.size, oninput: bind(r, "size") })),
+          h("td", { style: "width:140px" }, gradeCell(r)),
+          h("td", { style: "width:62px" }, h("input", { class: "mdi-in mdi-num", type: "number", min: "1", value: r.qty, oninput: bind(r, "qty", true) })),
+          h("td", { style: "width:96px" }, h("input", { class: "mdi-in mdi-num", type: "number", step: "0.01", value: r.price, oninput: bind(r, "price", true) })),
+          h("td", { class: "mdi-num", style: "width:96px;padding-top:10px" }, money((+r.qty || 0) * (+r.price || 0))));
       })));
 
+    const supplierBox = h("div", null, h("label", null, "Supplier (from your setup)"),
+      h("select", { class: "mdi-in", onchange: (e) => { O.supplier = e.target.value; O.matchHow = O.supplier ? "you picked" : ""; regrade(); draw(); } },
+        h("option", { value: "" }, sups.length ? "— not in your setup —" : "— no suppliers set up yet —"),
+        sups.map((s) => h("option", { value: s.name, selected: O.supplier === s.name ? true : null }, s.name))),
+      O.supplier && O.matchHow ? h("div", { class: "raw", style: "color:var(--a);margin-top:3px" }, "✓ " + O.matchHow) : null);
+
     const logged = doc.logged;
-    const modal = themed(h("div", { class: "mdi-modal", role: "dialog", "aria-label": "Review invoice" },
+    const modal = themed(h("div", { class: "mdi-modal", role: "dialog", "aria-label": "Invoice" },
       h("div", { class: "mdi-head" },
         h("div", null,
-          h("h3", null, `Invoice from ${E.supplier || doc.supplier || "unknown supplier"}`, h("span", { class: "mdi-tag" }, doc.byAI ? "read by AI" : "read by MYDAY")),
-          h("small", null, `${doc.filename} · from ${O.item.from}`)),
+          h("h3", null, `Invoice ${O.reference || ""}`.trim(), h("span", { class: "mdi-tag" }, doc.byAI ? "read by AI" : "read by MYDAY")),
+          h("small", null, `From ${O.item.from} · ${O.item.date || ""} · ${doc.filename}`)),
         h("button", { class: "mdi-x", title: "Close", onclick: close }, "✕")),
-      O.docs.length > 1 ? h("div", { class: "mdi-tabs" }, O.docs.map((d, i) =>
-        h("button", { class: i === O.at ? "on" : "", onclick: () => { O.at = i; draw(); } }, `${d.filename} (${d.rows.length})${d.logged ? " ✓" : ""}`))) : null,
-      logged ? h("div", { class: "mdi-warn" }, `Already logged ${logged.count} lines to Auctions on ${new Date(logged.at).toLocaleDateString()}. Logging again would add them twice.`) : null,
+      logged ? h("div", { class: "mdi-warn" }, `Invoice ${O.reference || ""} is already in the Auction table — ${logged.count} lines added on ${new Date(logged.at).toLocaleDateString()}${logged.twin ? ` from another copy (${logged.from})` : ""}. Adding again would duplicate them.`) : null,
+      !O.supplier ? h("div", { class: "mdi-new" },
+        h("div", null, h("b", null, "New supplier? "), `"${O.newName || "This sender"}" isn't in your Suppliers setup. Pick one above, or add it:`),
+        h("div", { class: "mdi-row", style: "margin-top:7px" },
+          h("input", { class: "mdi-in", style: "max-width:280px", value: O.newName, placeholder: "e.g. Sprint Via NewCo", oninput: (e) => { O.newName = e.target.value; } }),
+          h("button", { class: "mdi-pri", onclick: () => addSupplier(O.newName) }, "+ Add as new supplier"),
+          h("span", { class: "raw" }, "Its grades will be the ones on this invoice; you can edit them in Setup."))) : null,
       (doc.issues || []).length ? h("div", { class: "mdi-warn" }, "⚠ " + doc.issues.join(" · ")) : null,
       h("div", { class: "mdi-meta" },
-        meta("Supplier", "supplier", { list: "mdi-sups" }),
-        meta("Invoice date", "date", { type: "date" }),
-        meta("Invoice no.", "reference"),
-        meta("Auction / lot", "auction"),
+        supplierBox,
+        h("div", null, h("label", null, "Invoice date"), h("input", { class: "mdi-in", type: "date", value: O.date, oninput: (e) => { O.date = e.target.value; } })),
+        h("div", null, h("label", null, "Invoice no."), h("input", { class: "mdi-in", value: O.reference, oninput: (e) => { O.reference = e.target.value; } })),
+        h("div", null, h("label", null, "Auction / lot"), h("input", { class: "mdi-in", value: O.auction, oninput: (e) => { O.auction = e.target.value; } })),
         h("div", null, h("label", null, "Status for these"),
           h("select", { class: "mdi-in", onchange: (e) => { O.status = e.target.value; } },
             [["won", "Won / bought"], ["pending", "Pending"], ["lost", "Lost"]].map(([v, l]) => h("option", { value: v, selected: O.status === v ? true : null }, l))))),
       h("div", { class: "mdi-sum" },
-        h("span", null, h("b", null, on.length), ` of ${E.rows.length} lines`),
+        h("span", null, h("b", null, on.length), ` of ${O.rows.length} lines`),
         h("span", null, h("b", null, qty), " devices"),
         h("span", null, "Lines ", h("b", null, money(lines))),
         fees ? h("span", { title: (doc.fees || []).map((f) => `${f.label} ${money(f.amount)}`).join(", ") }, "Fees ", h("b", null, money(fees))) : null,
         total ? h("span", null, "Invoice total ", h("b", null, money(total))) : null,
         match === true ? h("span", { class: "mdi-ok" }, "✓ adds up") : match === false ? h("span", { class: "mdi-bad" }, `⚠ off by ${money(allLines + fees - total)}`) : null,
-        flagged ? h("span", { class: "mdi-bad" }, `⚠ ${flagged} to check`) : null),
-      h("div", { class: "mdi-tbl" }, table, dl("mdi-makes", makes), dl("mdi-sups", suppliers)),
+        needGrade ? h("span", { class: "mdi-bad" }, `⚠ ${needGrade} need a grade`) : flagged ? h("span", { class: "mdi-bad" }, `⚠ ${flagged} to check`) : null),
+      h("div", { class: "mdi-tbl" }, table, dl("mdi-makes", makes)),
       h("div", { class: "mdi-foot" },
-        h("span", { class: "mdi-note" }, "Edit anything that's wrong, untick what you don't want. Highlighted lines need a look."),
-        h("button", { class: "mdi-sec", onclick: () => { dismiss(O.item.id + ":" + doc.sha); close(); try { window.__mydayFeedRefresh && window.__mydayFeedRefresh(); } catch (e) {} } }, "Don't log this"),
-        h("button", { class: "mdi-pri", disabled: on.length ? null : true, onclick: logIt },
-          on.length ? `${logged ? "Log again anyway" : "Log"} ${on.length} line${on.length === 1 ? "" : "s"} to Auctions` : "Nothing ticked"))));
+        h("span", { class: "mdi-note" }, !O.supplier ? "Choose or add the supplier first." : needGrade ? "Pick a grade for the highlighted lines." : "Everything's filled in from the invoice — check and add."),
+        h("button", { class: "mdi-sec", onclick: async () => { await setStatus(O.item.id, doc.sha, "dismissed"); close(); } }, "Don't add this invoice"),
+        h("button", { class: "mdi-pri", disabled: !on.length || !O.supplier || needGrade ? true : null, onclick: logIt },
+          `${logged ? "Add again anyway" : "Add"} ${on.length} line${on.length === 1 ? "" : "s"} to Auction table`))));
 
     if (!S.el.back) {
       S.el.back = h("div", { class: "mdi-back", onclick: (e) => { if (e.target === S.el.back) close(); } });
@@ -257,39 +342,41 @@
   function drawSoon() {
     clearTimeout(drawTimer);
     drawTimer = setTimeout(() => {
-      const a = document.activeElement, id = a && a.closest && a.closest("td") ? [...document.querySelectorAll(".mdi td .mdi-in")].indexOf(a) : -1;
-      const pos = a && a.selectionStart;
+      const a = document.activeElement, all = () => [...document.querySelectorAll(".mdi td .mdi-in")];
+      const id = a && a.closest && a.closest("td") ? all().indexOf(a) : -1, pos = a && a.selectionStart;
       draw();
-      if (id >= 0) { const b = document.querySelectorAll(".mdi td .mdi-in")[id]; if (b) { b.focus(); try { b.setSelectionRange(pos, pos); } catch (e) {} } }
+      if (id >= 0) { const b = all()[id]; if (b) { b.focus(); try { b.setSelectionRange(pos, pos); } catch (e) {} } }
     }, 450);
+  }
+  async function setStatus(id, sha, status) {
+    try { await fetch("/api/automation/invoice-status", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, sha, status }) }); } catch (e) {}
+    refreshAll();
+  }
+  function refreshAll() {
+    try { window.__mydayFeedRefresh && window.__mydayFeedRefresh(); } catch (e) {}
+    setTimeout(check, 300);
   }
 
   async function logIt() {
     const O = S.open, c = ctx(); if (!O || !c) return;
-    const doc = O.docs[O.at], E = O.edits[O.at];
-    const rows = E.rows.filter((r) => r.on && r.model && r.price);
-    if (!rows.length) return;
-    const supplier = E.supplier.trim() || doc.supplier || "";
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(E.date) ? E.date : c.today;
-    const ref = [E.reference && "Invoice " + E.reference, E.auction && "Auction " + E.auction].filter(Boolean).join(" · ");
+    const doc = O.doc;
+    const rows = O.rows.filter((r) => r.on && r.model && r.price && (r.grade || r.rawGrade));
+    if (!rows.length || !O.supplier) return;
+    const supplier = O.supplier;
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(O.date) ? O.date : c.today;
+    const ref = [O.reference && "Invoice " + O.reference, O.auction && "Auction " + O.auction].filter(Boolean).join(" · ");
 
     rows.forEach((r) => c.addEntry({
       id: rid(), date, supplier, oem: r.oem.trim(), model: r.model.trim(), size: r.size.trim() || "—",
-      grade: r.grade.trim().toUpperCase() || "—", price: Math.round((+r.price || 0) * 100) / 100,
+      grade: (r.grade || r.rawGrade).trim() || "—", price: Math.round((+r.price || 0) * 100) / 100,
       qty: Math.max(1, Math.round(+r.qty || 1)), status: O.status, premium: null, tax: null, shipEach: null,
       notes: [r.carrier, ref, doc.filename].filter(Boolean).join(" · "), createdAt: Date.now(),
       source: { kind: "invoice", mailId: O.item.id, sha: doc.sha, byAI: !!doc.byAI },
     }));
 
-    // Teach the catalog any new supplier grades and models, as an import does.
+    // Makes, models and sizes go into Setup; supplier grades only for a supplier added from this invoice.
     c.setCatalog((cat) => {
-      const sups = (cat.suppliers || []).map((s) => ({ ...s, grades: [...(s.grades || [])] }));
       const oems = (cat.oems || []).map((o) => ({ ...o, models: (o.models || []).map((m) => ({ ...m, sizes: [...(m.sizes || [])] })) }));
-      if (supplier) {
-        let s = sups.find((x) => x.name.toLowerCase() === supplier.toLowerCase());
-        if (!s) { s = { id: rid(), name: supplier, grades: [] }; sups.push(s); }
-        rows.forEach((r) => { const g = r.grade.trim().toUpperCase(); if (g && !s.grades.some((x) => x.toLowerCase() === g.toLowerCase())) s.grades.push(g); });
-      }
       rows.forEach((r) => {
         if (!r.oem.trim() || !r.model.trim()) return;
         let o = oems.find((x) => x.name.toLowerCase() === r.oem.trim().toLowerCase());
@@ -298,17 +385,25 @@
         if (!m) { m = { id: rid(), name: r.model.trim(), sizes: [] }; o.models.push(m); }
         const sz = r.size.trim(); if (sz && sz !== "—" && m.sizes.indexOf(sz) < 0) m.sizes.push(sz);
       });
-      return { suppliers: sups, oems };
+      return { ...cat, oems };
     });
+
+    // Remember this sender → supplier, and these invoice grades → their grades.
+    const L = learnedMap();
+    const next = { suppliers: { ...(L.suppliers || {}) }, grades: { ...(L.grades || {}) } };
+    if (norm(doc.supplier)) next.suppliers[norm(doc.supplier)] = supplier;
+    const dom = domainOf(O.item.from); if (dom) next.suppliers["@" + dom] = supplier;
+    next.grades[supplier] = { ...(next.grades[supplier] || {}) };
+    rows.forEach((r) => { const k = norm(String(r.rawGrade || "").replace(/\b(grade|condition|cond)\b/gi, "")); if (k && r.grade) next.grades[supplier][k] = r.grade; });
+    try { c.setPref({ invoiceMap: next }); } catch (e) {}
 
     try {
       await fetch("/api/automation/logged", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: O.item.id, sha: doc.sha, count: rows.length }) });
     } catch (e) {}
     close();
-    try { window.__mydayFeedRefresh && window.__mydayFeedRefresh(); } catch (e) {}
-    toastMsg(`Logged ${rows.length} line${rows.length === 1 ? "" : "s"} to Auctions.`, "Open Auctions", () => { try { c.setView("auctions"); } catch (e) {} });
-    setTimeout(check, 1500);
+    refreshAll();
+    toastMsg(`Added ${rows.length} line${rows.length === 1 ? "" : "s"} to the Auction table under ${supplier}.`, "Open Auctions", () => { try { c.setView("auctions"); } catch (e) {} });
   }
 
   function toastMsg(text, action, fn) {
@@ -346,5 +441,5 @@
     return j.added ? `Found ${j.added} more from the last ${days} days` : `Nothing new in the last ${days} days`;
   }
 
-  window.MYDAYInvoice = { open, check, reread, lookback };
+  window.MYDAYInvoice = { open, check, reread, lookback, matchSupplier, mapGrade, list };
 })();

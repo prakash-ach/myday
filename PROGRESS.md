@@ -187,6 +187,59 @@ sending mail, bidding, paying, deleting or changing anything in Gmail.
   filters, rumor/confirmed, source health, links open the original, staff
   without the section get no tab and a 403.
 
+### 6 October 2026 — your suppliers and grades, Captured Invoices, Past days
+- **Supplier matching** (`public/invoice.js`): invoices are matched to the
+  suppliers in Auctions → Setup by, in order: a match confirmed before
+  (invoice supplier name or sender domain, saved in prefs.invoiceMap); the
+  part after "Via" (ONM, MNVP, B-Stock) found in sender/invoice/file name;
+  aliases (Mannapov → MNVP); the full name. Tested: B-Stock → ATT Via
+  B-Stock, Mannapov → Verizon Via MNVP, ONM → T-Mobile Via ONM.
+- **Grade conversion** to that supplier's grades: confirmed before → exact
+  → same grade written differently ("Grade A+", "B plus") → the supplier's
+  shared prefix ("A" → DNA, "A" → T-Mobile A) → Sealed/New/CPO synonyms.
+  Anything else is left blank with a dropdown of that supplier's grades and
+  must be picked before adding. Choices are remembered per supplier.
+- **New supplier**: if no match, a box suggests adding it (grades from the
+  invoice) or picking an existing one; nothing is added to Setup without a tap.
+- **Captured Invoices** menu (`public/captured.js`, Team section
+  "captured"): every invoice MYDAY has read lines from, including in emails
+  already approved/ignored — From, email/invoice date, invoice no.,
+  supplier (or "New supplier"), total qty, total amount, status (To review /
+  Added / Not added), View invoice. Blinking red/yellow light and count on
+  the menu while any wait. "Not added" is stored on the server
+  (`/api/automation/invoice-status`), with "Put back to review".
+  View invoice → everything filled in → "Add N lines to Auction table".
+- Bid sheets are never treated as invoices when the email is classified as
+  an auction bid file.
+- **Past days** (`public/past.js`): button next to "Pick a date" on My day.
+  One date or a range (Yesterday / Last 7 / Last 30 quick picks): tasks
+  ticked each day (incl. repeating) and one-off tasks due that day and still
+  not done, with "Move to today". Follows the current space.
+- Test note: the test runner's cleanup didn't match the way the test server
+  starts, so one run hit an old server; fixed and every result above is from
+  a clean run.
+
+### 6 October 2026 — one row per invoice number; Captured Invoices since last Friday
+- **No duplicates**: Captured Invoices groups by invoice number (numbers
+  under 4 characters are grouped per sender). One row, "received N× — shown
+  once", showing the supplier's own copy rather than a colleague's forward.
+  If any copy was added, the invoice is Added; "Don't add" applies to every
+  copy; opening another copy of an added invoice warns it's already in the
+  Auction table (and from which copy).
+- **Start date**: `rules.capturedSince` — set automatically the first time to
+  the Friday before (Fri 2 Oct 2026), changeable with the date box on the
+  screen (up to 3 months back). Older invoices aren't shown.
+- **Backfill**: on first open, and when the date changes or "Fetch again
+  since …" is pressed, the server fetches every email with an attachment
+  since that date in the background (Gmail `after:` + `has:attachment`, up
+  to 150, paged; read-only), reading invoices with AI. It does not create
+  automatic tasks for those older emails. The screen shows "Fetching…" and
+  updates itself.
+- `google.listMessages` now pages through results (up to 200).
+- Tested: inbox with the same invoice original + forwarded, a Sep 25 invoice,
+  and this week's invoices — start date set to Oct 2, old one excluded, one
+  row per number, 4 entries (not 8), warnings and Don't add across copies.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
