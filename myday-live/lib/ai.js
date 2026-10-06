@@ -215,7 +215,7 @@ Rules for lines:
 - oem: one of ${JSON.stringify(known)} if it fits, spelled exactly like that; otherwise as written.
 - model: without the maker's name, as a buyer would say it, e.g. "iPhone 13 Pro Max", "Galaxy S22 Ultra", "Pixel 7a".
 - size: storage like "64GB", "128GB", "1TB"; "—" if none.
-- grade: exactly as the invoice grades it, uppercase, e.g. "A", "B+", "C", "D", "CPO", "NEW". Empty if not stated.
+- grade: exactly as the invoice grades it, uppercase, e.g. "A", "B+", "C", "D", "CPO", "NEW", "DNA", "DNB", "AA+". The grade is often a short code inside the description — after a dash, before the part number (e.g. "APPLE IPHONE 13 256 MIDNIGHT — DNC MLAH3LL/A" has grade "DNC"), or in its own column. Look for it on every line. Empty only if the line truly has none.
 - carrier: e.g. "Unlocked", "T-Mobile", "Verizon", "AT&T", empty if not stated.
 - qty: whole number. price: unit price per device. amount: line total. Numbers only, no $.
 - Copy what's printed. Never invent lines, prices or grades. If you can't read part of it, say so in notes.

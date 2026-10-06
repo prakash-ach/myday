@@ -74,6 +74,7 @@
   .mdi-new{margin:10px 18px 0;padding:11px 13px;border-radius:12px;background:rgba(var(--a-rgb),.08);border:1px dashed rgba(var(--a-rgb),.5);font-size:12.5px}
   .mdi-new .mdi-row{align-items:center}
   .mdi select.mdi-in{padding:5px 6px}
+  .mdi-addg{display:flex;align-items:center;gap:6px;padding:9px 18px 0;font-size:12.5px;color:var(--muted);cursor:pointer}
   `;
 
   function h(tag, attrs, ...kids) {
@@ -149,9 +150,36 @@
     return best;
   }
   const SAME_GRADE = [["sealed", "newsealed", "brandnew", "nib", "factorysealed"], ["new", "brandnew"], ["cpo", "certifiedpreowned"]];
-  function mapGrade(raw, sup) {
+  /* The supplier's grade written in the printed line itself, e.g.
+     "APPLE IPHONE 13 256 MIDNIGHT — DNC MLAH3LL/A". Only if exactly one of
+     their grades appears — two different ones means ask, never guess. */
+  function gradeInLine(line, sup) {
+    const text = String(line || "");
+    if (!text || !sup) return "";
+    const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const found = new Set();
+    for (const g of sup.grades.slice().sort((a, b) => b.length - a.length)) {
+      // Short grades (A, B+, C) only right after "grade"/"cond"; longer codes
+      // (DNB, AA+, T-Mobile A) anywhere as their own word. Never glued to a
+      // "/" — Apple part numbers end in "LL/A".
+      const re = g.length <= 2
+        ? new RegExp(`\\b(grade|grd|cond(ition)?)\\s*[:#-]?\\s*${esc(g)}(?![A-Za-z0-9+])`, "i")
+        : new RegExp(`(^|[\\s,;:|()\\[\\]—–-])${esc(g)}(?![A-Za-z0-9+/])`, "i");
+      if (re.test(text) && ![...found].some((f) => f.toLowerCase().includes(g.toLowerCase()))) found.add(g);
+    }
+    return found.size === 1 ? [...found][0] : "";
+  }
+  function mapGrade(raw, sup, line) {
     const r = String(raw || "").trim();
     if (!sup || !(sup.grades || []).length) return { grade: r.toUpperCase(), ok: !!r, how: "" };
+    const inLine = gradeInLine(line, sup);
+    const viaRaw = mapGradeRaw(r, sup);
+    // The printed line wins when it plainly names one of their grades.
+    if (inLine && (!viaRaw.ok || viaRaw.grade !== inLine)) return { grade: inLine, ok: true, how: `found "${inLine}" in the invoice line` };
+    return viaRaw;
+  }
+  function mapGradeRaw(raw, sup) {
+    const r = String(raw || "").trim();
     const G = sup.grades;
     const learned = (learnedMap().grades || {})[sup.name] || {};
     const nr = norm(r.replace(/\b(grade|condition|cond)\b/gi, ""));
@@ -223,7 +251,7 @@
   const supObj = () => { const c = ctx(), O = S.open; return O && O.supplier ? ((c.state.catalog.suppliers || []).find((s) => s.name === O.supplier) || null) : null; };
   function regrade() {
     const sup = supObj();
-    for (const r of S.open.rows) { const g = mapGrade(r.rawGrade, sup); r.grade = g.grade; r.gradeOk = g.ok; r.gradeHow = g.how; }
+    for (const r of S.open.rows) { if (r.manual) continue; const g = mapGrade(r.rawGrade, sup, r.raw); r.grade = g.grade; r.gradeOk = g.ok; r.gradeHow = g.how; }
   }
   function close() { if (S.el.back) S.el.back.remove(); S.el.back = null; S.open = null; }
 
@@ -260,10 +288,24 @@
 
     const gradeCell = (r) => {
       if (sup && (sup.grades || []).length) {
+        const fromInvoice = r.rawGrade && r.rawGrade !== r.grade ? h("div", { class: "raw" }, "invoice: " + r.rawGrade) : null;
+        if (r.manual) {
+          const isNew = r.grade && !sup.grades.some((g) => g.toLowerCase() === r.grade.trim().toLowerCase());
+          return h("div", null,
+            h("div", { style: "display:flex;gap:4px" },
+              h("input", { class: "mdi-in", value: r.grade, placeholder: "Type grade", "data-grade": "1",
+                oninput: (e) => { r.grade = e.target.value; r.gradeOk = !!r.grade.trim(); r.gradeHow = r.gradeOk ? "you typed it" : ""; drawSoon(); } }),
+              h("button", { class: "mdi-sec", style: "padding:4px 7px", title: "Back to the list", onclick: () => { r.manual = false; r.grade = ""; r.gradeOk = false; regrade(); draw(); } }, "↩")),
+            isNew ? h("div", { class: "raw", style: "color:#C9A227" }, "new grade for " + sup.name) : null, fromInvoice);
+        }
         return h("div", null,
-          h("select", { class: "mdi-in", onchange: (e) => { r.grade = e.target.value; r.gradeOk = !!r.grade; r.gradeHow = r.grade ? "you picked" : ""; draw(); } },
-            h("option", { value: "" }, "— pick —"), sup.grades.map((g) => h("option", { value: g, selected: r.grade === g ? true : null }, g))),
-          r.rawGrade && r.rawGrade !== r.grade ? h("div", { class: "raw" }, "invoice: " + r.rawGrade) : null);
+          h("select", { class: "mdi-in", onchange: (e) => {
+            if (e.target.value === "__type__") { r.manual = true; r.grade = r.rawGrade || ""; r.gradeOk = !!r.grade; r.gradeHow = r.grade ? "you typed it" : ""; draw();
+              setTimeout(() => { const i = [...document.querySelectorAll('.mdi [data-grade]')].find((x) => x.value === r.grade); if (i) i.focus(); }, 30); return; }
+            r.grade = e.target.value; r.gradeOk = !!r.grade; r.gradeHow = r.grade ? "you picked" : ""; draw(); } },
+            h("option", { value: "" }, "— pick —"), sup.grades.map((g) => h("option", { value: g, selected: r.grade === g ? true : null }, g)),
+            h("option", { value: "__type__" }, "✎ Type a grade…")),
+          fromInvoice);
       }
       return h("input", { class: "mdi-in", value: r.grade || r.rawGrade, oninput: (e) => { r.grade = e.target.value; r.rawGrade = e.target.value; } });
     };
@@ -326,6 +368,9 @@
         match === true ? h("span", { class: "mdi-ok" }, "✓ adds up") : match === false ? h("span", { class: "mdi-bad" }, `⚠ off by ${money(allLines + fees - total)}`) : null,
         needGrade ? h("span", { class: "mdi-bad" }, `⚠ ${needGrade} need a grade`) : flagged ? h("span", { class: "mdi-bad" }, `⚠ ${flagged} to check`) : null),
       h("div", { class: "mdi-tbl" }, table, dl("mdi-makes", makes)),
+      sup && newGrades(sup).length ? h("label", { class: "mdi-addg" },
+        h("input", { type: "checkbox", class: "mdi-ck", checked: O.addGrades !== false, onchange: (e) => { O.addGrades = e.target.checked; } }),
+        ` Also add ${newGrades(sup).map((g) => `"${g}"`).join(", ")} to ${sup.name}'s grades in Setup`) : null,
       h("div", { class: "mdi-foot" },
         h("span", { class: "mdi-note" }, !O.supplier ? "Choose or add the supplier first." : needGrade ? "Pick a grade for the highlighted lines." : "Everything's filled in from the invoice — check and add."),
         h("button", { class: "mdi-sec", onclick: async () => { await setStatus(O.item.id, doc.sha, "dismissed"); close(); } }, "Don't add this invoice"),
@@ -337,6 +382,12 @@
       document.body.appendChild(S.el.back);
     }
     S.el.back.replaceChildren(modal);
+  }
+  /* Grades typed by hand that the supplier doesn't have yet. */
+  function newGrades(sup) {
+    const O = S.open; if (!O || !sup) return [];
+    const have = new Set((sup.grades || []).map((g) => g.toLowerCase()));
+    return [...new Set(O.rows.filter((r) => r.on && r.manual && r.grade.trim()).map((r) => r.grade.trim()))].filter((g) => !have.has(g.toLowerCase()));
   }
   let drawTimer = null;
   function drawSoon() {
@@ -374,8 +425,11 @@
       source: { kind: "invoice", mailId: O.item.id, sha: doc.sha, byAI: !!doc.byAI },
     }));
 
-    // Makes, models and sizes go into Setup; supplier grades only for a supplier added from this invoice.
+    // Makes, models and sizes go into Setup; typed grades too, if you ticked the box.
+    const supNow = supObj();
+    const addG = O.addGrades !== false ? newGrades(supNow) : [];
     c.setCatalog((cat) => {
+      const suppliers = addG.length ? (cat.suppliers || []).map((s) => s.name === supplier ? { ...s, grades: [...(s.grades || []), ...addG] } : s) : cat.suppliers;
       const oems = (cat.oems || []).map((o) => ({ ...o, models: (o.models || []).map((m) => ({ ...m, sizes: [...(m.sizes || [])] })) }));
       rows.forEach((r) => {
         if (!r.oem.trim() || !r.model.trim()) return;
@@ -385,7 +439,7 @@
         if (!m) { m = { id: rid(), name: r.model.trim(), sizes: [] }; o.models.push(m); }
         const sz = r.size.trim(); if (sz && sz !== "—" && m.sizes.indexOf(sz) < 0) m.sizes.push(sz);
       });
-      return { ...cat, oems };
+      return { ...cat, suppliers, oems };
     });
 
     // Remember this sender → supplier, and these invoice grades → their grades.

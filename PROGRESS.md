@@ -240,6 +240,31 @@ sending mail, bidding, paying, deleting or changing anything in Gmail.
   and this week's invoices — start date set to Oct 2, old one excluded, one
   row per number, 4 entries (not 8), warnings and Don't add across copies.
 
+### 6 October 2026 — grades read from the printed invoice line
+- Real MNVP invoices write the grade inside the description ("APPLE IPHONE
+  13 256 MIDNIGHT — DNC MLAH3LL/A") and the AI left the grade empty, so
+  lines needed picking (one was picked wrong: DNB instead of DNC).
+- `invoice.js gradeInLine()`: scans each printed line for the matched
+  supplier's grades. Codes of 3+ characters (DNB, AA+, T-Mobile A) as their
+  own word; 1–2 character grades (A, B+, C) only right after "grade"/"cond";
+  never glued to "/" (Apple part numbers end "LL/A"). Exactly one grade found
+  → used, and it overrides a different AI grade; two different → asks.
+- AI invoice prompt now says grades are often short codes inside the
+  description and gives the MNVP example.
+- Tested on the five real lines from the screenshot plus six tricky cases.
+- Already-added invoices aren't changed; an entry added with a wrong grade is
+  fixed in the Auction table.
+
+### 6 October 2026 — type any grade by hand
+- Invoice review grade dropdown ends with "✎ Type a grade…": turns the box
+  into a text field (↩ goes back to the list). Typed grades survive changing
+  the supplier. A grade not on the supplier's list is marked "new grade for
+  …", and a tick box (on by default) adds the new grade(s) to that supplier
+  in Setup when the lines are added. What was typed is remembered for that
+  supplier's invoice wording, like a picked grade.
+- Tested: typed "DN Premium" on a Mannapov line, switched supplier and back,
+  added — entry has "DN Premium", Setup has it after DNE.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
