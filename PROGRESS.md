@@ -283,6 +283,65 @@ sending mail, bidding, paying, deleting or changing anything in Gmail.
   (colour → notes) and merges colour-named Setup models into the clean one
   (sizes merged). Prices, grades, quantities untouched.
 
+### 6 October 2026 — safe saving across devices, invoice integrity, trends, health
+- **Two devices no longer overwrite each other** (`lib/merge.js`, server
+  `/api/state`, `public/sync.js`, bundle patch 14). Every save carries the
+  version it started from (`baseRev`); the server keeps recent versions in
+  memory and, if another device saved in between, does a three-way merge:
+  id lists (tasks, entries, notes, ...) item by item, objects key by key,
+  edits on both sides field by field (incoming wins on the same field);
+  deletions stick only if the other side didn't edit the item; no base known
+  (after a restart) → nothing dropped. The tab adopts the merged result only
+  if nothing newer was typed meanwhile. Tabs check `/api/state-rev` every 15 s
+  and on focus. Tested with two simultaneous browsers (adds, a pref change,
+  a delete while the other added).
+- **Undo add** on Captured Invoices removes exactly that invoice's lines and
+  returns it to review (all copies). **Duplicate check** against the Auction
+  table: warns when entries already mention the invoice number.
+- **Landed cost**: invoice fees go into each entry — shipping/other per
+  phone (shipEach), buyer premium % and tax % — only when the invoice adds up
+  (fee list complete); shown in the review as "Landed cost: …".
+- **Price trends** (`public/trends.js`, "📈 Trends & download" on Auctions):
+  filters (make, model, size, grade, supplier, status, period, week/month,
+  price or landed), cards (units, spend, qty-weighted average, last 30 vs
+  previous 30 days, cheapest supplier), SVG chart with low–high band or one
+  line per supplier, monthly table, biggest moves across all models;
+  downloads (CSV, opens in Excel): trend table, price grid by month, entries.
+- **Health** (`/api/health/status`, `public/health.js`): Gmail, OpenAI (last
+  error kept in `ai.lastProblem`), news sources, nightly backup, last save.
+  The Automation menu light is now overall health (green / amber / red,
+  problems in the tooltip, click for the panel); 🩺 Health button.
+- Automatic tasks only for mail dated yesterday or today (local), on every
+  path (regular check, backfill, look back, read again); older mail is still
+  read and listed with the reason no task was made. Promotions are ignored
+  at any date. Found because the since-Friday backfill could otherwise take
+  today's mail without making its tasks.
+- Not done yet: real invoice samples as tests (need copies from Prakash),
+  tidying the email/invoice screens into one place, rebuilding the screen
+  source (`src/`), outside price sources (eBay Browse API proposed; no
+  stealth scraping of Amazon/Swappa/Back Market).
+
+### 6 October 2026 — new mail only; never MobileSentrix's own invoices; new suppliers mapped to Setup
+- Prakash logs past invoices by hand. Captured Invoices now starts from the
+  day it's first opened (local date); the automatic since-Friday backfill and
+  the "Fetch again" button are gone (the date can still be changed to filter).
+- **Strict rule**: an invoice counts only if the seller is someone other than
+  his own company (MobileSentrix, Apt-Ability — the Automation settings' own
+  names and domains). Dropped when the seller name is his company (even via
+  QuickBooks etc.), or when sent from his own domain with no other seller
+  visible. A colleague forwarding another seller's invoice still counts.
+  Enforced in the watcher (rows removed, reason recorded), in the Captured
+  list, and in the invoice rule (no auto task; also checks the AI's
+  counterparty).
+- **New suppliers mapped to Setup**: sizes matched to the model's Setup sizes
+  ("256" → 256GB, "1 TB" → 1TB); grades cleaned before becoming the new
+  supplier's scale ("GRADE A" → A, "Grade B+" → B+); suggested name in the
+  Setup pattern "Carrier Via Seller" (e.g. "Verizon Via Prime Phones") when
+  60%+ of units share a carrier; models cleaned as before.
+- Tested: MobileSentrix invoice from own domain and via QuickBooks dropped,
+  Ali's forward of a B-Stock invoice kept; Prime Phones invoice → supplier
+  "Verizon Via Prime Phones" [A, B+], sizes/models/colours mapped.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

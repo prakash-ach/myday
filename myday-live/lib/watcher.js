@@ -147,6 +147,17 @@ async function readOne(dir, userId, id, options, run) {
     }
   }
 
+  /* STRICT: an invoice only counts when the seller is someone other than
+     your own company. MobileSentrix's own invoices — or any invoice sent
+     from your own domain where no other seller can be seen — are dropped. */
+  for (const d of documents) {
+    if (!d.rows || !d.rows.length) continue;
+    if (ownSeller(d.supplier, msg.from, options)) {
+      delete d.rows; d.ownSeller = true;
+      d.issues = [`seller is ${d.supplier || "your own company"} — your own invoices aren't captured`];
+    }
+  }
+
   return {
     id, threadId: msg.threadId, from: msg.from, subject: msg.subject, date: msg.date, snippet: msg.snippet,
     seenAt: Date.now(), classified: p.classified, party: p.party, who: p.who || null,
@@ -161,11 +172,17 @@ async function readOne(dir, userId, id, options, run) {
 function applyRules(dir, userId, item, options, run) {
   const rules = options.rules;
   if (!rules) return;
-  const d = rulesLib.decide(item, { classify: item.classify, summary: item.aiSummary }, rules, { ownDomains: options.ownDomains || [] });
+  const d = rulesLib.decide(item, { classify: item.classify, summary: item.aiSummary }, rules, { ownDomains: options.ownDomains || [], ownNames: options.ownNames || [] });
   if (!d) return;
   const at = Date.now();
   const entry = { at, rule: d.rule, action: d.action, reason: d.reason, mailId: item.id, from: item.from, subject: item.subject };
   item.auto = (item.auto || []).filter((a) => a.rule !== d.rule);
+  /* Same-day tasks are for new mail. Anything older (found by a backfill,
+     a look-back or "Read again") is still read and listed, but gets no task. */
+  if (d.action === "task" && options.taskSince && (item.date || "") < options.taskSince) {
+    item.auto.push({ rule: d.rule, action: "review", reason: `${d.reason} — but it arrived ${item.date}, so no new task was made`, at });
+    return;
+  }
   if (d.action === "task") {
     const task = rulesLib.buildTask(item, { classify: item.classify, summary: item.aiSummary }, d, rules, options);
     const isNew = outbox.add(dir, userId, task, { mailId: item.id, rule: d.rule, reason: d.reason });
@@ -181,6 +198,19 @@ function applyRules(dir, userId, item, options, run) {
     item.auto.push({ rule: d.rule, action: "review", reason: d.reason, at });
     run.autoLog.push(entry);
   }
+}
+
+/* Is this invoice's seller your own company? By the seller's name (any of
+   your company names, e.g. MobileSentrix, Apt-Ability), or — when no seller
+   name was found — by the sender being on your own domain. */
+const squash = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+function ownSeller(seller, from, options) {
+  const names = [...(options.ownNames || ["mobilesentrix", "apt-ability"]), ...(options.ownDomains || []).map((d) => String(d).split(".")[0])].map(squash).filter((n) => n.length >= 4);
+  const s = squash(seller);
+  if (s && names.some((n) => s.includes(n))) return true;
+  const dom = ((String(from || "").match(/@([^>\s]+)/) || [])[1] || "").toLowerCase();
+  const own = (options.ownDomains || []).some((o) => o && (dom === o.toLowerCase() || dom.endsWith("." + o.toLowerCase())));
+  return own && !s;
 }
 
 const newRun = (feed) => ({
@@ -317,10 +347,11 @@ const refKey = (inv) => {
 /* One row per invoice number, however many times it arrived (re-sent,
    forwarded, PDF and spreadsheet). If any copy was added to the Auction
    table, the invoice counts as added. Only from `since` on, if given. */
-function invoices(dir, userId, since, ownDomains) {
+function invoices(dir, userId, since, ownDomains, ownNames) {
   const own = (from) => { const d = ((String(from).match(/@([^>\s]+)/) || [])[1] || "").toLowerCase();
     return (ownDomains || []).some((o) => o && (d === o.toLowerCase() || d.endsWith("." + o.toLowerCase()))); };
-  const all = allInvoices(dir, userId).filter((x) => !since || (x.emailDate || "") >= since);
+  const all = allInvoices(dir, userId).filter((x) => (!since || (x.emailDate || "") >= since)
+    && !ownSeller(x.supplier, x.from, { ownDomains, ownNames }));          // never your own company's invoices
   const groups = new Map();
   for (const inv of all) { const k = refKey(inv); (groups.get(k) || groups.set(k, []).get(k)).push(inv); }
   const out = [];
@@ -379,13 +410,19 @@ function setInvoiceStatus(dir, userId, id, sha, status) {
   return true;
 }
 
-/* Remember an invoice was logged to Auctions. */
-function markLogged(dir, userId, id, sha, count) {
+/* Remember an invoice was logged to Auctions — or, on undo, forget it for
+   every copy of that invoice number. */
+function markLogged(dir, userId, id, sha, count, undo) {
   const feed = readFeed(dir, userId);
   const item = (feed.items || []).find((x) => x.id === id);
   const doc = item && (item.documents || []).find((d) => d.sha === sha);
   if (!doc) return false;
-  doc.logged = { at: Date.now(), count: Number(count) || 0 };
+  if (undo) {
+    const key = refKey({ reference: doc.reference, sha: doc.sha, from: item.from });
+    for (const it of feed.items || []) for (const d of it.documents || []) {
+      if (d.rows && refKey({ reference: d.reference, sha: d.sha, from: it.from }) === key) delete d.logged;
+    }
+  } else doc.logged = { at: Date.now(), count: Number(count) || 0 };
   writeFeed(dir, userId, feed);
   return true;
 }

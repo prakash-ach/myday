@@ -87,18 +87,17 @@
 
     root.append(
       h("h1", null, "Captured Invoices", waiting ? h("span", { class: "myday-alert", title: `${waiting} waiting for review` }) : null),
-      h("p", { class: "mdc-sub" }, "Invoices MYDAY read from your email. Review each one and add it to the Auction table — nothing goes in until you do. Each invoice number appears once."),
+      h("p", { class: "mdc-sub" }, "Invoices from outside sellers that MYDAY read from your email. Review each one and add it to the Auction table — nothing goes in until you do. Each invoice number appears once; invoices from MobileSentrix itself are never captured."),
       S.data && S.data.since ? h("div", { class: "mdc-bar", style: "font-size:12.5px;color:var(--muted)" },
         "Showing invoices received since",
         h("input", { type: "date", value: S.data.since, max: new Date().toISOString().slice(0, 10), class: "mdc-btn", style: "padding:4px 8px",
           onchange: (e) => e.target.value && setSince(e.target.value) }),
-        S.data.fetching ? h("span", { style: "color:var(--a);font-weight:600" }, "⟳ Fetching invoices since " + fmtDay(S.data.since) + "…") : null) : null,
+        h("span", { style: "color:var(--faint)" }, "— new emails are added as they arrive")) : null,
       h("div", { class: "mdc-bar" },
         [["review", "To review"], ["added", "Added"], ["dismissed", "Not added"], ["all", "All"]].map(([k, l]) =>
           h("button", { class: "mdc-chip" + (S.tab === k ? " on" : ""), onclick: () => { S.tab = k; draw(); } }, `${l} (${count(k)})`)),
         h("span", { style: "flex:1" }),
-        h("button", { class: "mdc-btn", disabled: S.busy || (S.data && S.data.fetching) || null, onclick: () => setSince(S.data && S.data.since) },
-          S.data && S.data.fetching ? "Fetching…" : "✦ Fetch again since " + (S.data && S.data.since ? fmtDay(S.data.since) : "start")),
+
         h("button", { class: "mdc-btn", onclick: load }, "↻ Refresh"),
         window.MYDAYModels && window.MYDAYModels.count() ? h("button", { class: "mdc-btn", style: "color:#C9A227;border-color:rgba(245,197,66,.5)",
           title: "Some Auction entries have a colour in the model name", onclick: () => { window.MYDAYModels.tidyWindow(); setTimeout(draw, 800); } },
@@ -127,6 +126,9 @@
             h("td", { class: "num" }, h("b", null, money(inv.total))),
             h("td", null, h("span", { class: "mdc-st " + st[0] }, inv.status === "review" ? h("span", { class: "myday-alert" }) : null, st[1]),
               inv.status === "added" && inv.logged ? h("small", null, `${inv.logged.count} lines · ${new Date(inv.logged.at).toLocaleDateString()}`) : null,
+              inv.status === "added" ? h("button", { class: "mdc-reopen", title: "Remove this invoice's lines from the Auction table",
+                onclick: async () => { if (!confirm(`Take invoice ${inv.reference || ""} back out of the Auction table? Its lines will be removed and it goes back to "To review".`)) return;
+                  const n = await window.MYDAYInvoice.undoAdd(inv.mailId, inv.sha, inv.reference); S.msg = `Removed ${n} line${n === 1 ? "" : "s"} from the Auction table`; load(); } }, "Undo add") : null,
               inv.status === "dismissed" ? h("button", { class: "mdc-reopen", onclick: () => reopen(inv) }, "Put back to review") : null,
               inv.flagged && inv.status === "review" ? h("small", null, `${inv.flagged} line${inv.flagged === 1 ? "" : "s"} to check`) : null),
             h("td", { class: "num" }, h("button", { class: "mdc-view" + (inv.status === "review" ? "" : " quiet"),

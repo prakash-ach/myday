@@ -236,18 +236,53 @@
     }
     const c = ctx(), { item, doc } = d;
     if (d.alreadyAdded && !doc.logged) doc.logged = { ...d.alreadyAdded, twin: true };
+    // Entries already in the Auction table that came from this invoice, however they got there.
+    const ref = String(doc.reference || "").trim();
+    const inTable = ref.length >= 3 ? ((ctx() && ctx().state.entries) || []).filter((e) =>
+      (e.source && e.source.sha === doc.sha) || new RegExp(`\\b${ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(e.notes || "")).length : 0;
     const m = matchSupplier(doc, item);
     S.open = {
       item, doc, status: "won", supplier: m ? m.name : "", matchHow: m ? m.how : "", newName: doc.supplier || "",
-      date: doc.date || item.date || (c && c.today) || "", reference: doc.reference || "", auction: doc.auction || "",
-      rows: doc.rows.map((r) => ({ on: true, raw: r.raw || "", rawGrade: r.grade || "", oem: r.oem || "", ...tidyModel(r), size: r.size || "—",
+      date: doc.date || item.date || (c && c.today) || "", reference: doc.reference || "", auction: doc.auction || "", inTable,
+      rows: doc.rows.map((r) => { const t = tidyModel(r), sz = mapSize(r.oem, t.model, r.size);
+        return { on: true, raw: r.raw || "", rawGrade: r.grade || "", oem: r.oem || "", ...t, modelHow: [t.modelHow, sz.how].filter(Boolean).join(" · "), size: sz.size,
         carrier: r.carrier || "", qty: r.qty || 1, price: r.price || 0, issues: (r.issues || []).filter((x) => !/grade/.test(x)),
-        confidence: r.confidence == null ? 1 : r.confidence, grade: "", gradeOk: false, gradeHow: "" })),
+        confidence: r.confidence == null ? 1 : r.confidence, grade: "", gradeOk: false, gradeHow: "" }; }),
     };
+    if (!m) S.open.newName = suggestName(doc, S.open.rows) || S.open.newName;
     regrade();
     if (S.toast) { S.toast.remove(); S.toast = null; }
     draw();
   }
+  /* Sizes the way Setup writes them: "256" → "256GB", "1 TB" → "1TB", and if
+     Setup already lists sizes for that model, its exact spelling. */
+  function mapSize(oem, model, raw) {
+    const r = String(raw || "").trim();
+    if (!r || r === "—") return { size: "—", how: "" };
+    const m = r.replace(/,/g, "").match(/(\d+(?:\.\d+)?)\s*(tb|t|gb|g)?\b/i);
+    if (!m) return { size: r, how: "" };
+    const n = Number(m[1]), u = (m[2] || "").toLowerCase();
+    const norm = u.startsWith("t") || (n <= 4 && !u.startsWith("g")) ? `${n}TB` : `${n}GB`;
+    const c = ctx(), cat = (c && c.state && c.state.catalog) || {};
+    const o = (cat.oems || []).find((x) => x.name.toLowerCase() === String(oem || "").toLowerCase());
+    const mm = o && (o.models || []).find((x) => x.name.toLowerCase() === String(model || "").toLowerCase());
+    const known = mm && (mm.sizes || []).find((s) => s.replace(/\s/g, "").toLowerCase() === norm.toLowerCase());
+    const size = known || norm;
+    return { size, how: size !== r ? `size "${r}" is ${size}` : "" };
+  }
+  /* A grade as a supplier's scale would hold it: "GRADE A+" → "A+". */
+  const cleanGrade = (g) => String(g || "").toUpperCase().replace(/\b(GRADE|GRD|CONDITION|COND)\b[:#-]?/g, "").replace(/\bA\s?PLUS\b/g, "A+").replace(/\bB\s?PLUS\b/g, "B+").replace(/\s+/g, " ").trim();
+  /* A new supplier's name in your Setup's pattern: "Carrier Via Seller". */
+  function suggestName(doc, rows) {
+    const seller = String(doc.supplier || "").replace(/,?\s*\b(llc|inc|ltd|corp|co|company|solutions|limited)\b\.?/gi, "").replace(/\s+/g, " ").trim();
+    const CAR = [[/\b(verizon|vzw?)\b/i, "Verizon"], [/\bt-?mobile|tmo\b/i, "T-Mobile"], [/\b(at&?t|att)\b/i, "ATT"], [/\bsprint\b/i, "Sprint"], [/\bunlocked\b/i, "Unlocked"]];
+    const count = {};
+    for (const r of rows) for (const [re, name] of CAR) if (re.test(r.carrier || "") || re.test(r.raw || "")) { count[name] = (count[name] || 0) + (+r.qty || 1); break; }
+    const top = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+    const total = rows.reduce((n, r) => n + (+r.qty || 1), 0);
+    return top && seller && top[1] >= total * 0.6 ? `${top[0]} Via ${seller}` : seller;
+  }
+
   /* "iPhone 13 Pro Alpine Green" → "iPhone 13 Pro", colour kept for the notes. */
   function tidyModel(r) {
     const M = window.MYDAYModels;
@@ -264,7 +299,7 @@
 
   function addSupplier(name) {
     const c = ctx(), O = S.open; if (!c || !name.trim()) return;
-    const grades = [...new Set(O.rows.map((r) => String(r.rawGrade || r.grade || "").trim().toUpperCase()).filter(Boolean))];
+    const grades = [...new Set(O.rows.map((r) => cleanGrade(r.rawGrade || r.grade)).filter(Boolean))];
     c.setCatalog((cat) => {
       const sups = (cat.suppliers || []).slice();
       if (!sups.some((s) => s.name.toLowerCase() === name.trim().toLowerCase())) sups.push({ id: rid(), name: name.trim(), grades: grades.length ? grades : ["A", "B", "C"] });
@@ -351,6 +386,7 @@
           h("h3", null, `Invoice ${O.reference || ""}`.trim(), h("span", { class: "mdi-tag" }, doc.byAI ? "read by AI" : "read by MYDAY")),
           h("small", null, `From ${O.item.from} · ${O.item.date || ""} · ${doc.filename}`)),
         h("button", { class: "mdi-x", title: "Close", onclick: close }, "✕")),
+      !logged && O.inTable ? h("div", { class: "mdi-warn" }, `${O.inTable} entr${O.inTable === 1 ? "y in the Auction table already mentions" : "ies in the Auction table already mention"} invoice ${O.reference}. Check before adding, or you'll have it twice.`) : null,
       logged ? h("div", { class: "mdi-warn" }, `Invoice ${O.reference || ""} is already in the Auction table — ${logged.count} lines added on ${new Date(logged.at).toLocaleDateString()}${logged.twin ? ` from another copy (${logged.from})` : ""}. Adding again would duplicate them.`) : null,
       !O.supplier ? h("div", { class: "mdi-new" },
         h("div", null, h("b", null, "New supplier? "), `"${O.newName || "This sender"}" isn't in your Suppliers setup. Pick one above, or add it:`),
@@ -374,7 +410,8 @@
         fees ? h("span", { title: (doc.fees || []).map((f) => `${f.label} ${money(f.amount)}`).join(", ") }, "Fees ", h("b", null, money(fees))) : null,
         total ? h("span", null, "Invoice total ", h("b", null, money(total))) : null,
         match === true ? h("span", { class: "mdi-ok" }, "✓ adds up") : match === false ? h("span", { class: "mdi-bad" }, `⚠ off by ${money(allLines + fees - total)}`) : null,
-        needGrade ? h("span", { class: "mdi-bad" }, `⚠ ${needGrade} need a grade`) : flagged ? h("span", { class: "mdi-bad" }, `⚠ ${flagged} to check`) : null),
+        needGrade ? h("span", { class: "mdi-bad" }, `⚠ ${needGrade} need a grade`) : flagged ? h("span", { class: "mdi-bad" }, `⚠ ${flagged} to check`) : null,
+        (() => { const L = landed(); return L.note ? h("span", { title: "Added to each line's cost in the Auction table" }, "Landed cost: ", h("b", null, L.note)) : null; })()),
       h("div", { class: "mdi-tbl" }, table, dl("mdi-makes", makes)),
       sup && newGrades(sup).length ? h("label", { class: "mdi-addg" },
         h("input", { type: "checkbox", class: "mdi-ck", checked: O.addGrades !== false, onchange: (e) => { O.addGrades = e.target.checked; } }),
@@ -391,6 +428,27 @@
     }
     S.el.back.replaceChildren(modal);
   }
+  /* The invoice's fees, spread into each phone's cost the way the Auction
+     table counts it: price × (1 + premium%) × (1 + tax%) + shipping each.
+     Only filled in when the invoice adds up (so the fee list is complete);
+     otherwise the Auction table's usual defaults apply. */
+  function landed() {
+    const O = S.open, doc = O.doc;
+    const units = O.rows.reduce((n, r) => n + (+r.qty || 0), 0);
+    const lines = O.rows.reduce((n, r) => n + (+r.qty || 0) * (+r.price || 0), 0);
+    const fees = doc.fees || [];
+    const sum = (re) => fees.filter((f) => re.test(f.label || "")).reduce((n, f) => n + (f.amount || 0), 0);
+    const prem = sum(/premium|buyer/i), tax = sum(/tax|vat|gst/i);
+    const ship = fees.reduce((n, f) => n + (f.amount || 0), 0) - prem - tax;    // shipping and anything else, per phone
+    const complete = doc.total ? Math.abs(lines + prem + tax + ship - doc.total) <= 1 : false;
+    if (!units || !lines || (!complete && !fees.length)) return { premium: null, tax: null, shipEach: null, note: "" };
+    const premium = prem || complete ? Math.round((prem / lines) * 10000) / 100 : null;
+    const taxPct = tax || complete ? Math.round((tax / (lines * (1 + (premium || 0) / 100))) * 10000) / 100 : null;
+    const shipEach = ship || complete ? Math.round((ship / units) * 100) / 100 : null;
+    const bits = [shipEach ? `+${money(shipEach)} each shipping/fees` : null, premium ? `${premium}% premium` : null, taxPct ? `${taxPct}% tax` : null].filter(Boolean);
+    return { premium, tax: taxPct, shipEach, note: bits.length ? bits.join(" · ") : complete ? "no extra fees" : "" };
+  }
+
   /* Grades typed by hand that the supplier doesn't have yet. */
   function newGrades(sup) {
     const O = S.open; if (!O || !sup) return [];
@@ -425,12 +483,13 @@
     const date = /^\d{4}-\d{2}-\d{2}$/.test(O.date) ? O.date : c.today;
     const ref = [O.reference && "Invoice " + O.reference, O.auction && "Auction " + O.auction].filter(Boolean).join(" · ");
 
+    const cost = landed();
     rows.forEach((r) => c.addEntry({
       id: rid(), date, supplier, oem: r.oem.trim(), model: r.model.trim(), size: r.size.trim() || "—",
       grade: (r.grade || r.rawGrade).trim() || "—", price: Math.round((+r.price || 0) * 100) / 100,
-      qty: Math.max(1, Math.round(+r.qty || 1)), status: O.status, premium: null, tax: null, shipEach: null,
+      qty: Math.max(1, Math.round(+r.qty || 1)), status: O.status, premium: cost.premium, tax: cost.tax, shipEach: cost.shipEach,
       notes: [r.colour, r.carrier, ref, doc.filename].filter(Boolean).join(" · "), createdAt: Date.now(),
-      source: { kind: "invoice", mailId: O.item.id, sha: doc.sha, byAI: !!doc.byAI },
+      source: { kind: "invoice", mailId: O.item.id, sha: doc.sha, byAI: !!doc.byAI, reference: O.reference || "" },
     }));
 
     // Makes, models and sizes go into Setup; typed grades too, if you ticked the box.
@@ -503,5 +562,18 @@
     return j.added ? `Found ${j.added} more from the last ${days} days` : `Nothing new in the last ${days} days`;
   }
 
-  window.MYDAYInvoice = { open, check, reread, lookback, matchSupplier, mapGrade, list };
+  /* Take an added invoice back out of the Auction table. */
+  async function undoAdd(mailId, sha, reference) {
+    const c = ctx(); if (!c) return 0;
+    const ref = String(reference || "").trim();
+    const mine = (c.state.entries || []).filter((e) => e.source && e.source.kind === "invoice"
+      && (e.source.sha === sha || (ref && e.source.reference && e.source.reference.toLowerCase() === ref.toLowerCase())));
+    mine.forEach((e) => c.removeEntry(e.id));
+    await fetch("/api/automation/logged", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: mailId, sha, undo: true }) }).catch(() => {});
+    refreshAll();
+    return mine.length;
+  }
+
+  window.MYDAYInvoice = { undoAdd, open, check, reread, lookback, matchSupplier, mapGrade, list };
 })();

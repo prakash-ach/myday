@@ -38,7 +38,12 @@ function spend(dir, userId, tokens) {
 }
 
 /* ---------- one call ---------- */
-async function call(dir, userId, messages, { maxTokens = 1500 } = {}) {
+const lastProblem = new Map();       // userId → { at, message }, cleared on the next success
+async function call(dir, userId, messages, opts) {
+  try { const r = await callInner(dir, userId, messages, opts); lastProblem.delete(userId); return r; }
+  catch (e) { lastProblem.set(userId, { at: Date.now(), message: String(e && e.message || e) }); throw e; }
+}
+async function callInner(dir, userId, messages, { maxTokens = 1500 } = {}) {
   if (!configured()) throw new Error("OpenAI isn't set up yet");
   if (usage(dir, userId).calls >= LIMIT()) throw new Error(`Today's limit of ${LIMIT()} AI requests is used up. It resets at midnight UTC.`);
   const ctl = new AbortController();
@@ -376,4 +381,4 @@ ${ctxText}`;
   return { reply: String(out.reply || "").slice(0, 3000) || "…", actions };
 }
 
-module.exports = { configured, MODEL, LIMIT, usage, emailTasks, readInvoice, summariseNews, quote, chat };
+module.exports = { lastProblem, configured, MODEL, LIMIT, usage, emailTasks, readInvoice, summariseNews, quote, chat };

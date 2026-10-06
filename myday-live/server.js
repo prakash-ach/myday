@@ -23,6 +23,18 @@ const ai = require("./lib/ai");
 const rulesLib = require("./lib/rules");
 const outbox = require("./lib/outbox");
 const newsLib = require("./lib/news");
+const mergeLib = require("./lib/merge");
+/* Recent saved versions, so a save can be merged against the version that
+   device started from. Kept in memory; after a restart the merge just keeps
+   everything from both sides. */
+const versions = new Map();
+function remember(userId, key, rev, value) {
+  const k = userId + "|" + key;
+  const list = versions.get(k) || [];
+  if (!list.some((v) => v.rev === rev)) list.push({ rev, value });
+  versions.set(k, list.slice(-25));
+}
+const recall = (userId, key, rev) => ((versions.get(userId + "|" + key) || []).find((v) => v.rev === rev) || {}).value || null;
 const quotes = require("./lib/quotes");
 
 /* What the AI needs to know about a person: their categories, so drafted
@@ -254,6 +266,14 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { username: u.username, displayName: u.displayName || u.username });
   }
 
+  /* Another device saved? A cheap check every few seconds. */
+  if (p.startsWith("/api/state-rev/") && req.method === "GET") {
+    const s = sessionFor(req);
+    if (!s) return json(res, 401, { error: "not signed in" });
+    const key = decodeURIComponent(p.slice("/api/state-rev/".length));
+    const stored = readJson(stateFile(s.userId, key));
+    return json(res, 200, { rev: stored ? stored.rev || 0 : 0 });
+  }
   if (p.startsWith("/api/state/")) {
     const s = sessionFor(req);
     if (!s) return json(res, 401, { error: "not signed in" });
@@ -263,18 +283,31 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET") {
       const stored = readJson(stateFile(s.userId, key));
       if (!stored) return json(res, 404, { error: "no value" });
-      return json(res, 200, { key, value: stored.value });
+      remember(s.userId, key, stored.rev || 0, stored.value);
+      return json(res, 200, { key, value: stored.value, rev: stored.rev || 0 });
     }
     if (req.method === "PUT") {
       if (!isJson(req)) return json(res, 400, { error: "bad request" });
       let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
       if (typeof b.value !== "string") return json(res, 400, { error: "value must be a string" });
+      const stored = readJson(stateFile(s.userId, key));
+      const rev = stored ? stored.rev || 0 : 0;
+      let value = b.value, merged = false;
+      /* Someone else saved since this device last loaded or saved: put both
+         sets of changes together instead of the last save winning. Older
+         tabs that don't send a base are merged the safe way (nothing lost). */
+      if (stored && typeof stored.value === "string" && b.baseRev !== rev && key === "myday_proto_v1") {
+        const base = typeof b.baseRev === "number" ? recall(s.userId, key, b.baseRev) : null;
+        value = mergeLib.merge3(base, stored.value, b.value);
+        merged = true;
+      }
       /* A tab that hasn't collected the latest automatic tasks yet would
          save over them; put any it's missing back in. */
-      if (key === outbox.KEY) { try { b.value = outbox.inject(DATA_DIR, s.userId, b.value); } catch (e) {} }
-      try { writeJson(stateFile(s.userId, key), { key, value: b.value, at: Date.now() }, key === "myday_proto_v1"); }
+      if (key === outbox.KEY) { try { value = outbox.inject(DATA_DIR, s.userId, value); } catch (e) {} }
+      try { writeJson(stateFile(s.userId, key), { key, value, at: Date.now(), rev: rev + 1 }, key === "myday_proto_v1"); }
       catch (e) { return json(res, 500, { error: "write failed" }); }
-      return json(res, 200, { ok: true });
+      remember(s.userId, key, rev + 1, value);
+      return json(res, 200, merged || value !== b.value ? { ok: true, rev: rev + 1, merged: true, value } : { ok: true, rev: rev + 1 });
     }
     return json(res, 405, { error: "method not allowed" });
   }
@@ -794,17 +827,60 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { updated: n });
   }
 
+  /* ---- Health: is everything actually working? ---- */
+  if (p === "/api/health/status" && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const checks = [];
+    const add = (name, state, detail) => checks.push({ name, state, detail });
+    const ago = (t) => { if (!t) return "never"; const m = Math.round((Date.now() - t) / 60000); return m < 2 ? "just now" : m < 120 ? m + " min ago" : Math.round(m / 60) + " h ago"; };
+    // Gmail
+    const tok = google.readTokens(DATA_DIR, me.id);
+    const feed = watcher.readFeed(DATA_DIR, me.id);
+    const last = (feed.log || [])[0] || {};
+    if (!google.isConfigured()) add("Gmail", "warn", "Google details aren't in /etc/myday/secrets.env yet");
+    else if (!tok) add("Gmail", "warn", "Not connected — connect it on the Automation screen");
+    else if (last.error && !/^AI:/.test(last.error)) add("Gmail", "bad", "Last check failed: " + last.error);
+    else if (feed.stats && feed.stats.lastRun && Date.now() - feed.stats.lastRun > 30 * 60e3) add("Gmail", "warn", "No successful check since " + ago(feed.stats.lastRun));
+    else add("Gmail", "ok", "Read-only · last checked " + ago(feed.stats && feed.stats.lastRun));
+    // AI
+    const prob = ai.lastProblem.get(me.id);
+    const u = ai.usage(DATA_DIR, me.id);
+    if (!ai.configured()) add("OpenAI", "warn", "No API key — AI features are off");
+    else if (prob && Date.now() - prob.at < 6 * 3600e3) add("OpenAI", /credit|key|limit/i.test(prob.message) ? "bad" : "warn", prob.message + " (" + ago(prob.at) + ")");
+    else add("OpenAI", "ok", `${ai.MODEL()} · ${u.calls} of ${ai.LIMIT()} requests used today`);
+    // News
+    if (sectionsFor(me.username).indexOf("news") >= 0) {
+      const nv = newsLib.view(DATA_DIR);
+      const down = nv.sources.filter((s) => s.at && !s.ok).length;
+      if (!nv.lastSuccess) add("News", "warn", "Not fetched yet");
+      else if (Date.now() - nv.lastSuccess > 3 * 3600e3) add("News", "bad", "No source reachable since " + ago(nv.lastSuccess));
+      else add("News", down ? "warn" : "ok", `${nv.sources.length - down} of ${nv.sources.length} sources working · refreshed ${ago(nv.lastRefresh)}`);
+    }
+    // Backups
+    try {
+      const dir = process.env.BACKUP_DIR || "/var/backups/myday";
+      const files = fs.readdirSync(dir).map((f) => fs.statSync(path.join(dir, f)).mtimeMs).sort((a, b) => b - a);
+      add("Nightly backup", files[0] && Date.now() - files[0] < 36 * 3600e3 ? "ok" : "warn", files[0] ? "Last one " + ago(files[0]) : "None found yet");
+    } catch (e) { add("Nightly backup", "warn", "No backup folder found"); }
+    // Saving
+    const st = readJson(stateFile(me.id, "myday_proto_v1"));
+    add("Your data", "ok", st ? `Saved ${ago(st.at)} · version ${st.rev || 0} · devices merge their changes` : "Nothing saved yet");
+    const overall = checks.some((c) => c.state === "bad") ? "bad" : checks.some((c) => c.state === "warn") ? "warn" : "ok";
+    return json(res, 200, { overall, checks });
+  }
+
   /* ---- Captured invoices ---- */
   if (p === "/api/automation/invoices" && req.method === "GET") {
     const me = userFromSession(sessionFor(req));
     if (!me) return json(res, 401, { error: "not signed in" });
     let r = rulesLib.read(DATA_DIR, me.id);
     if (!r.capturedSince) {
-      // First time: start from last Friday, and fetch everything since then once.
-      r = rulesLib.write(DATA_DIR, me.id, { ...r, capturedSince: rulesLib.lastFriday(r) });
-      backfill(me);
+      // First time: start from today. Past invoices are logged by hand; only new mail comes in.
+      r = rulesLib.write(DATA_DIR, me.id, { ...r, capturedSince: rulesLib.localToday(r) });
     }
-    const list = watcher.invoices(DATA_DIR, me.id, r.capturedSince, watcherSettings(me).ownDomains);
+    const ws = watcherSettings(me);
+    const list = watcher.invoices(DATA_DIR, me.id, r.capturedSince, ws.ownDomains, ws.ownNames);
     return json(res, 200, { invoices: list, toReview: list.filter((x) => x.status === "review").length,
       since: r.capturedSince, fetching: backfilling.has(me.id) });
   }
@@ -817,8 +893,7 @@ const server = http.createServer(async (req, res) => {
     const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || "") ? b.date : r.capturedSince || rulesLib.lastFriday(r);
     if (Date.now() - Date.parse(date + "T12:00:00Z") > 92 * 864e5) return json(res, 400, { error: "Pick a date within the last three months." });
     rulesLib.write(DATA_DIR, me.id, { ...r, capturedSince: date });
-    backfill(me);
-    return json(res, 200, { since: date, fetching: true });
+    return json(res, 200, { since: date, fetching: false });
   }
   if (p === "/api/automation/invoice" && req.method === "GET") {
     const me = userFromSession(sessionFor(req));
@@ -940,7 +1015,7 @@ const server = http.createServer(async (req, res) => {
     const me = userFromSession(sessionFor(req));
     if (!me) return json(res, 401, { error: "not signed in" });
     let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
-    const ok = watcher.markLogged(DATA_DIR, me.id, String(b.id || ""), String(b.sha || ""), b.count);
+    const ok = watcher.markLogged(DATA_DIR, me.id, String(b.id || ""), String(b.sha || ""), b.count, !!b.undo);
     return json(res, ok ? 200 : 404, ok ? { ok: true } : { error: "couldn't find that invoice" });
   }
 
@@ -1010,14 +1085,14 @@ setInterval(() => {
 /* Fetch every email with an attachment since the Captured Invoices start
    date, once at a time per person, in the background. Reads only. It
    doesn't make automatic tasks for these older emails — that's for mail
-   arriving from now on. */
+   arriving from now on (today and yesterday): older mail gets no task. */
 const backfilling = new Set();
 function backfill(u) {
   if (backfilling.has(u.id) || !google.readTokens(DATA_DIR, u.id)) return;
   const since = rulesLib.read(DATA_DIR, u.id).capturedSince;
   if (!since) return;
   backfilling.add(u.id);
-  watcher.sweep(DATA_DIR, u.id, { ...watcherSettings(u), rules: null, since, attachmentsOnly: true, max: 150, aiMax: 80, invoiceMax: 60 })
+  watcher.sweep(DATA_DIR, u.id, { ...watcherSettings(u), since, attachmentsOnly: true, max: 150, aiMax: 80, invoiceMax: 60 })
     .catch((e) => console.log("[captured] " + (e && e.message || e)))
     .finally(() => backfilling.delete(u.id));
 }
@@ -1041,6 +1116,8 @@ function watcherSettings(u) {
       ...aiOptsFor(u),
       ai: aiAllowed(u.username, "ai-mail"),
       rules: rulesLib.read(DATA_DIR, u.id),
+      // automatic tasks only for mail from yesterday (local) on
+      taskSince: (() => { const r = rulesLib.read(DATA_DIR, u.id); const d = new Date(rulesLib.localToday(r) + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); })(),
     };
 }
 watcher.start(DATA_DIR, {

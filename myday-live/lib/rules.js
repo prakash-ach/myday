@@ -99,7 +99,7 @@ function decide(item, ai, rules, opts) {
   const kind = c && c.type;
   const conf = c ? Number(c.confidence) || 0 : 0;
   const docs = item.documents || [];
-  const invoiceDoc = docs.find((d) => d.rows && d.rows.length && !d.auctionBidFile);
+  const invoiceDoc = docs.find((d) => d.rows && d.rows.length && !d.auctionBidFile && !d.ownSeller);
   const sheet = docs.find((d) => ["xlsx", "xls", "csv", "pdf"].includes(d.kind));
   const subj = String(item.subject || "");
 
@@ -124,7 +124,10 @@ function decide(item, ai, rules, opts) {
 
   // 2. Outside supplier invoice.
   const aiInvoice = kind === "supplier_invoice" && conf >= rules.sure.invoices;
-  if (on.invoices && (invoiceDoc || aiInvoice) && kind !== "promotion") {
+  const sq = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const ownNames = (opts.ownNames || ["mobilesentrix", "apt-ability"]).map(sq).filter((n) => n.length >= 4);
+  const ownInvoice = docs.some((d) => d.ownSeller) || (c && ownNames.some((n) => sq(c.counterparty).includes(n)));
+  if (on.invoices && (invoiceDoc || aiInvoice) && kind !== "promotion" && !(ownInvoice && !invoiceDoc)) {
     const doc = invoiceDoc || docs.find((d) => d.kind === "pdf") || null;
     return { rule: "invoices", action: "task", key: doc ? "doc:" + doc.sha : "mail:" + item.id, doc,
       reason: invoiceDoc ? `${invoiceDoc.filename} was read as an invoice${invoiceDoc.byAI ? " by the AI" : ""}` : `the AI read it as a supplier invoice (${Math.round(conf * 100)}% sure)` };

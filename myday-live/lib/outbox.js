@@ -83,7 +83,7 @@ function deliver(dir, userId) {
   if (!stored || typeof stored.value !== "string") return 0;   // never opened MYDAY: the first tab will collect them
   const next = inject(dir, userId, stored.value);
   if (next === stored.value) return 0;
-  writeJson(f, { key: KEY, value: next, at: Date.now() }, true);
+  writeJson(f, { key: KEY, value: next, at: Date.now(), rev: (stored.rev || 0) + 1 }, true);   // new version, so open tabs pull it in
   return waiting.length;
 }
 
