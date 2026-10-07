@@ -24,6 +24,7 @@ const rulesLib = require("./lib/rules");
 const outbox = require("./lib/outbox");
 const newsLib = require("./lib/news");
 const mergeLib = require("./lib/merge");
+const inboxLib = require("./lib/inbox");
 /* Recent saved versions, so a save can be merged against the version that
    device started from. Kept in memory; after a restart the merge just keeps
    everything from both sides. */
@@ -825,6 +826,53 @@ const server = http.createServer(async (req, res) => {
     });
     watcher.writeFeed(DATA_DIR, me.id, feed);
     return json(res, 200, { updated: n });
+  }
+
+  /* ---- The Automation inbox view (read-only) ---- */
+  if (p === "/api/automation/inbox" && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const feed = watcher.readFeed(DATA_DIR, me.id);
+    const ws = watcherSettings(me);
+    const r = rulesLib.read(DATA_DIR, me.id);
+    const inv = watcher.invoices(DATA_DIR, me.id, r.capturedSince, ws.ownDomains, ws.ownNames);
+    const sinceDay = r.inboxSince ? new Intl.DateTimeFormat("en-CA", { timeZone: rulesLib.zone(r), year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(r.inboxSince)) : "";
+    const view = inboxLib.build(feed, { ownDomains: ws.ownDomains, toReviewInvoices: inv.filter((x) => x.status === "review").length, since: r.inboxSince, sinceDay });
+    const tok = google.readTokens(DATA_DIR, me.id);
+    return json(res, 200, { ...view, connected: !!tok, email: (tok && tok.email) || "",
+      lastRun: feed.stats && feed.stats.lastRun, looked: feed.stats && feed.stats.looked });
+  }
+  /* "Start from now": the inbox and Captured Invoices only show mail from this
+     moment on. A setting — nothing stored is changed. at: "now" or null to undo. */
+  if (p === "/api/automation/inbox-since" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req) || "{}"); } catch (e) { b = {}; }
+    const r = rulesLib.read(DATA_DIR, me.id);
+    const at = b.at === "now" ? Date.now() : 0;
+    rulesLib.write(DATA_DIR, me.id, { ...r, inboxSince: at, capturedSince: at ? rulesLib.localToday(r) : r.capturedSince });
+    return json(res, 200, { since: at });
+  }
+  /* Check the mailbox now, with your saved settings. */
+  if (p === "/api/automation/check-now" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (!google.readTokens(DATA_DIR, me.id)) return json(res, 400, { error: "Gmail isn't connected" });
+    try { const r = await watcher.sweep(DATA_DIR, me.id, watcherSettings(me)); return json(res, 200, { added: r.added.length, problems: r.problems.slice(0, 3) }); }
+    catch (e) { return json(res, 400, { error: String(e && e.message || e) }); }
+  }
+  /* "Put back" from Handled quietly: a new note of your choice, nothing else changes. */
+  if (p === "/api/automation/view-override" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const feed = watcher.readFeed(DATA_DIR, me.id);
+    feed.viewOverrides = feed.viewOverrides || {};
+    for (const id of (Array.isArray(b.ids) ? b.ids : []).slice(0, 100).map(String)) {
+      if (b.to === "needs") feed.viewOverrides[id] = "needs"; else delete feed.viewOverrides[id];
+    }
+    watcher.writeFeed(DATA_DIR, me.id, feed);
+    return json(res, 200, { ok: true });
   }
 
   /* ---- Health: is everything actually working? ---- */

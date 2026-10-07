@@ -342,6 +342,48 @@ sending mail, bidding, paying, deleting or changing anything in Gmail.
   Ali's forward of a B-Stock invoice kept; Prime Phones invoice → supplier
   "Verizon Via Prime Phones" [A, B+], sizes/models/colours mapped.
 
+### 7 October 2026 — a calmer Automation screen (GLOBAL RULE: never destroy or edit existing data)
+- Prakash's rule, applied everywhere from now on: existing data is never
+  destroyed or edited by MYDAY on its own. Only his taps change things.
+- **New Automation inbox** (`lib/inbox.js` read-only view builder,
+  `/api/automation/inbox`, `public/inbox.js`): one compact row per
+  conversation or invoice number (replies grouped, outside sender shown), in
+  tabs Needs you · Added automatically · Handled quietly · Owed. Quiet reasons
+  are computed at display time (verification/sign-in codes, login alerts,
+  shipping/delivery notices, promotions, "PAID" confirmations, own-company
+  automatic notices, automatic messages, nothing to do) — stored mail isn't
+  touched. "Put back" stores a new `feed.viewOverrides` note only.
+- **Held-back suggestions**: "Pay" suggestions on PAID emails, promotions,
+  quiet mail, or mail the AI didn't read as a bill are shown greyed with the
+  reason and only added if ticked. Owed counts each unpaid invoice once.
+- Actions: Add (ticked suggestions, once per conversation; marks all its
+  emails approved), Done (auto-added), Ignore (inside MYDAY only), bulk
+  select, Read again, Check now (`/api/automation/check-now`, saved
+  settings). The old screen remains as "Classic view" (route
+  `automation-classic`) for Gmail connect and settings.
+- **New mail only**: the old rules' "Pay" suggestion is kept only when the AI
+  reads the email as a bill or actionable order; never on "PAID" subjects.
+- Tested on a copy of the real inbox (16 emails incl. PAID Mannapov, Dell and
+  Surface promos, codes, shipping, offline messages, a 3-email invoice
+  thread): 3 rows need him, 8 quiet with reasons, 1 auto; Owed $44,337 (was
+  inflated to millions); stored emails byte-identical after viewing and after
+  Put back.
+
+### 7 October 2026 — Start from now, Select all, Clear all
+- **Start from now** (`rules.inboxSince`, `/api/automation/inbox-since`): the
+  Automation inbox shows only mail first seen from that moment AND dated that
+  day or later; older mail is tucked away from the view (count shown), never
+  changed or deleted. Also sets Captured Invoices to start today. "Show
+  everything" undoes it. No look-back.
+- **Select all** box above the list; **Clear all N** for the current tab
+  (asks first): Needs you / Handled quietly → marked ignored inside MYDAY,
+  Added automatically → marked done. Status change by his tap only; nothing
+  deleted; Gmail untouched.
+- Tested: 16 old emails tucked (stored data byte-identical), 2 new emails
+  shown, Select all + Clear all marked them ignored (still stored), Show
+  everything restored the older view; older mail first read after the start
+  stayed hidden.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

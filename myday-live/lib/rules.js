@@ -29,6 +29,7 @@ const DEFAULTS = {
   promoHints: ["sickw.com"],          // senders known for promotions — a hint, judged by content
   sure: { bids: 0.7, invoices: 0.7, orders: 0.75, promotions: 0.85 },
   capturedSince: "",                  // Captured Invoices starts here (YYYY-MM-DD)
+  inboxSince: 0,                      // Automation shows mail first seen from this moment (ms); older is tucked away, never deleted
 };
 
 const file = (dir, userId) => path.join(dir, "rules-" + userId + ".json");
@@ -56,6 +57,7 @@ function write(dir, userId, rules) {
     promoHints: clean(rules.promoHints),
     sure: { ...DEFAULTS.sure },
     capturedSince: /^\d{4}-\d{2}-\d{2}$/.test(String(rules.capturedSince || "")) ? rules.capturedSince : "",
+    inboxSince: Number(rules.inboxSince) > 0 ? Number(rules.inboxSince) : 0,
   };
   fs.mkdirSync(dir, { recursive: true });
   const tmp = file(dir, userId) + ".tmp";

@@ -120,7 +120,7 @@ async function readOne(dir, userId, id, options, run) {
      a comment and steps. The built-in invoice reader's payment tasks are kept,
      because it copies totals straight off the PDF. If the AI fails or the
      day's limit is used, the rules' tasks stand. */
-  let tasks = p.tasks;
+  let tasks = PAID_SUBJECT_EARLY.test(msg.subject || "") ? p.tasks.filter((t) => !(t.kind === "payment" || /^pay\b/i.test(t.title || ""))) : p.tasks;
   let aiSummary = null;
   let classify = null;
   if (aiOn && p.classified !== "muted" && run.ai < (options.aiMax || 15)) {
@@ -139,8 +139,14 @@ async function readOne(dir, userId, id, options, run) {
       if (classify && classify.type === "auction_bid_file" && classify.confidence >= 0.7) {
         for (const d of documents) if (d.byAI && d.rows) { delete d.rows; d.byAI = false; d.bidFile = true; d.issues = (d.issues || []).filter((x) => !/^AI:|adds to/.test(x)); }
       }
-      const keep = p.tasks.filter((t) => t.kind === "payment" && t.amount);
-      const extra = r.tasks.filter((t) => !(keep.length && /\bpay\b|invoice|payment/i.test(t.title)));
+      /* The old rules' "Pay" suggestion is kept only when the AI agrees this
+         is something to pay — never for "PAID" confirmations, promotions,
+         or mail the AI says needs nothing. (New mail only; stored mail is
+         left exactly as it was.) */
+      const paidMail = PAID_SUBJECT_EARLY.test(msg.subject || "");
+      const aiSaysBill = !!(classify && (classify.type === "supplier_invoice" || (classify.type === "order" && classify.actionable)));
+      const keep = paidMail || !aiSaysBill ? [] : p.tasks.filter((t) => t.kind === "payment" && t.amount);
+      const extra = r.tasks.filter((t) => !(keep.length && /\bpay\b|invoice|payment/i.test(t.title)) && !(paidMail && /^pay\b/i.test(t.title)));
       tasks = [...keep, ...extra];
     } catch (e) {
       run.problems.push({ subject: msg.subject, error: "AI: " + String(e && e.message || e) });
@@ -199,6 +205,8 @@ function applyRules(dir, userId, item, options, run) {
     run.autoLog.push(entry);
   }
 }
+
+const PAID_SUBJECT_EARLY = /(^|\b)(re:\s*|fwd?:\s*)*paid\b[:\s]|\bpayment (received|confirmation|confirmed)\b|\bpaid in full\b/i;
 
 /* Is this invoice's seller your own company? By the seller's name (any of
    your company names, e.g. MobileSentrix, Apt-Ability), or — when no seller
