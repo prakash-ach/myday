@@ -177,8 +177,22 @@
       const t = x && x.task ? x.task : x;
       put(t, "upcoming", (x && x.date) || (t && t.date));
     });
+    // Your auction history, summed up: month × supplier × model × size × grade.
+    const agg = {};
+    const yearAgo = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10);
+    for (const e of (c.state.entries || [])) {
+      if (!e.date || e.date < yearAgo || !(+e.price > 0)) continue;
+      const k = [e.date.slice(0, 7), e.supplier, e.oem, e.model, e.size, e.grade, e.status].join("|");
+      const a = agg[k] || (agg[k] = { units: 0, spend: 0, min: Infinity, max: 0, lines: 0 });
+      const q = +e.qty || 1; a.units += q; a.spend += (+e.price) * q; a.min = Math.min(a.min, +e.price); a.max = Math.max(a.max, +e.price); a.lines++;
+    }
+    const auctions = Object.entries(agg).sort((x, y) => y[0].localeCompare(x[0])).slice(0, 600).map(([k, a]) => {
+      const [month, supplier, make, model, size, grade, status] = k.split("|");
+      return { month, supplier, make, model, size, grade, status, units: a.units, avg: Math.round((a.spend / a.units) * 100) / 100, min: a.min, max: a.max };
+    });
     const d = new Date();
     return {
+      auctionHistory: auctions.length ? { note: "Auction table, last 12 months, one row per month+supplier+model+size+grade+status; avg is qty-weighted price paid", rows: auctions } : undefined,
       today: c.today,
       now: d.toLocaleString("en-US", { weekday: "long", hour: "numeric", minute: "2-digit" }),
       space: c.space,
@@ -203,6 +217,7 @@
     if (a.type === "approve_mail") return [`Add ${a.count === 1 ? "its task" : `its ${a.count} tasks`} from email`, a.subject];
     if (a.type === "ignore_mail") return ["Ignore email", a.subject];
     if (a.type === "review_invoice") return ["Review invoice & log to Auctions", a.label || a.subject];
+    if (a.type === "watch") return ["Watch this model", a.model];
     if (!t) return null;
     if (a.type === "done") return ["Mark done", t.title];
     if (a.type === "move") return ["Move", `${t.title} → ${fmtDay(a.date)}${fmtTime(a.time)}`];
@@ -232,6 +247,7 @@
     const c = ctx(); if (!c) return false;
     if (a.type === "approve_mail" || a.type === "ignore_mail") return applyMail(a);
     if (a.type === "review_invoice") { if (window.MYDAYInvoice) { closePanel(); window.MYDAYInvoice.open(a.mailId); } return false; }
+    if (a.type === "watch") { return window.MYDAYCool ? window.MYDAYCool.watch(a.model) : false; }
     if (a.type === "add") {
       c.addTask({
         id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4),
@@ -445,5 +461,5 @@
     setInterval(paint, 3000);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
-  window.MYDAYAssistant = { open: openPanel, close: closePanel };
+  window.MYDAYAssistant = { open: openPanel, close: closePanel, context };
 })();

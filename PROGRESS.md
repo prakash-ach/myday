@@ -465,6 +465,34 @@ sending mail, bidding, paying, deleting or changing anything in Gmail.
   click → page filtered; "galaxy" → S24 Ultra; unrelated text → no card; the
   chat prompt contained the values.
 
+### 9 October 2026 — ✨ extras: Snap & know, briefing, bid board, price watch, Ask my history, widget
+All open from a new ✨ button in the top bar (`public/cool.js`).
+- **📷 Snap & know**: camera/photo → `/api/snap` (AI vision, `ai.snap`) reads
+  make, model, storage, colour, IMEI; model cleaned with models.js; shows
+  Apple trade-in (matched by cleaned name), his 30-day avg buy, units in the
+  Auction table, open tasks; Watch / Open in Trade-In / Copy IMEI. Photos are
+  shrunk to 1400 px JPEG in the browser first. Needs the AI assistant switch.
+- **🎧 Morning briefing**: `/api/briefing` writes ~1 minute of speech from his
+  day (tasks/overdue from Max's context, inbox Needs you, Owed, recent
+  trade-in changes); cached per local day, "Make a new one"; played with the
+  device's own voice (keep the screen on).
+- **⏱ Bid board**: full-screen countdowns for today/tomorrow — tasks with a
+  deadline (bid-file tasks) or bid/auction/lot tasks with a time; green →
+  amber (<2 h) → red pulsing (<30 min) → closed; quick price check (Apple
+  trade-in + his avg). Ticks every second.
+- **👁 Price watch**: prefs.watch (his own list; add from the panel, Snap,
+  Apple Trade-In rows, or Max's "watch" action). Alerts: Apple trade-in value
+  changed since watching/acknowledged; his buy price this week ±5% vs the
+  previous month; invoice lines this week ±10% vs his usual. Daily toast nudge.
+- **Ask my history**: Max's context now carries the Auction table summarised
+  by month × supplier × model × size × grade × status (last 12 months, ≤600
+  rows), with its own space separate from tasks; Max told to answer from it.
+- **📱 Widget**: `/api/widget/token` makes a revocable random link (only a
+  hash is stored); `/api/widget?t=` returns a read-only summary (next task,
+  today's count, bids closing, invoices waiting). Scriptable script provided
+  to copy. Switching off → 401.
+- Tested all six end to end (incl. no-sign-in widget call and revocation).
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

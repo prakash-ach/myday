@@ -75,7 +75,7 @@
       <div class="mdt2-card" style="margin-top:10px">${rows.length ? `<table>
         <tr><th>Model</th><th class="n">Apple gives up to</th><th class="n">Change</th><th class="n">You paid (30-day avg)</th><th class="n">Apple vs you</th></tr>
         ${rows.map((r) => { const y = mine[norm(r.model)]; const spread = y ? r.value - y.avg : null; const open = S.open.has(r.model);
-          return `<tr class="row" data-m="${esc(r.model)}"><td><b>${esc(r.model)}</b></td><td class="n"><b>${money(r.value)}</b></td>
+          return `<tr class="row" data-m="${esc(r.model)}"><td><b>${esc(r.model)}</b> <button class="mdt2-btn" style="padding:1px 7px;margin-left:4px" data-w="${esc(r.model)}" title="Watch this model for changes">👁</button></td><td class="n"><b>${money(r.value)}</b></td>
             <td class="n">${r.change ? `<span class="${r.change > 0 ? "up" : "down"}">${r.change > 0 ? "▲" : "▼"} ${money(Math.abs(r.change))}</span> <span class="mdt2-meta">${day(r.since)}</span>` : `<span class="mdt2-meta">no change</span>`}</td>
             <td class="n">${y ? `${money(y.avg)} <span class="mdt2-meta">· ${y.units} units</span>` : `<span class="mdt2-meta">—</span>`}</td>
             <td class="n">${spread == null ? "—" : `<span class="${spread >= 0 ? "up" : "down"}">${spread >= 0 ? "+" : "−"}${money(Math.abs(spread))}</span>`}</td></tr>
@@ -87,6 +87,7 @@
     root.style.setProperty("--a", (c && c.accent) || "#2FBF87");
     root.innerHTML = html;
     root.addEventListener("click", async (e) => {
+      const w = e.target.closest("[data-w]"); if (w) { e.stopPropagation(); if (window.MYDAYCool) { window.MYDAYCool.watch(w.dataset.w); w.textContent = "👁 ✓"; } return; }
       const t = e.target.closest("[data-k],[data-check],[data-paste],[data-read],[data-m]"); if (!t) return;
       if (t.dataset.k) { S.kind = t.dataset.k; S.q = ""; return draw(); }
       if (t.dataset.m) { S.open.has(t.dataset.m) ? S.open.delete(t.dataset.m) : S.open.add(t.dataset.m); return draw(); }
@@ -173,5 +174,6 @@
     S.host = host; draw(); load();
   }
   function unmount() { S.host = null; }
-  window.MYDAYTradeIn = { mount, unmount };
+  async function lookup(q, max) { const D = await data(); return { rows: D && !D.denied ? matches(q, D.rows, max || 5) : [], mine: yours(), updated: D && D.updated, denied: !!(D && D.denied) }; }
+  window.MYDAYTradeIn = { mount, unmount, lookup, yours, norm, open: (q) => { S.q = q || ""; try { ctx().setView("tradein"); } catch (e) {} } };
 })();

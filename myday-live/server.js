@@ -835,6 +835,77 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { updated: n });
   }
 
+  /* ---- Snap & know ---- */
+  if (p === "/api/snap" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (!aiAllowed(me.username, "ai-chat") || !ai.configured()) return json(res, 403, { error: "Snap & know needs the AI assistant switched on." });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "That photo is too big — try again." }); }
+    const img = String(b.image || "").replace(/^data:[^,]+,/, "");
+    if (img.length < 100 || img.length > 6e6) return json(res, 400, { error: "No usable photo" });
+    try {
+      const r = await ai.snap(DATA_DIR, me.id, img, b.mime);
+      const tv = sectionsFor(me.username).indexOf("tradein") >= 0 ? tradein.view(DATA_DIR) : null;
+      const key = (s) => String(s || "").toLowerCase().replace(/^apple\s+/, "").replace(/[^a-z0-9]/g, "");
+      const trade = tv && r.model ? tv.rows.find((x) => key(x.model) === key(r.model)) || null : null;
+      return json(res, 200, { ...r, trade, tradeAsOf: tv && tv.updated });
+    } catch (e) { return json(res, 400, { error: String(e && e.message || e) }); }
+  }
+  /* ---- Morning briefing: written once a day, re-made on request ---- */
+  if (p === "/api/briefing" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (!aiAllowed(me.username, "ai-chat") || !ai.configured()) return json(res, 403, { error: "The briefing needs the AI assistant switched on." });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const r = rulesLib.read(DATA_DIR, me.id), day = rulesLib.localToday(r);
+    const f = path.join(DATA_DIR, "briefing-" + me.id + ".json");
+    let cached = null; try { cached = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) {}
+    if (cached && cached.day === day && !b.fresh) return json(res, 200, cached);
+    try {
+      const feed = watcher.readFeed(DATA_DIR, me.id);
+      const view = inboxLib.build(feed, { ownDomains: watcherSettings(me).ownDomains, since: r.inboxSince });
+      const tv = sectionsFor(me.username).indexOf("tradein") >= 0 ? tradein.view(DATA_DIR) : null;
+      const extra = { inboxNeedsYou: view.rows.filter((x) => x.bucket === "needs").slice(0, 8).map((x) => `${x.who}: ${x.subject}`),
+        owed: view.owed, tradeInChanges: tv ? tv.rows.filter((x) => x.change && Date.now() - x.since < 3 * 864e5).slice(0, 4).map((x) => `${x.model} ${x.change > 0 ? "up" : "down"} $${Math.abs(x.change)} to $${x.value}`) : [] };
+      const script = await ai.briefing(DATA_DIR, me.id, { context: b.context || {}, extra, name: me.displayName || me.username });
+      const out = { day, script, at: Date.now() };
+      fs.writeFileSync(f, JSON.stringify(out), { mode: 0o600 });
+      return json(res, 200, out);
+    } catch (e) { return json(res, 400, { error: String(e && e.message || e) }); }
+  }
+  /* ---- Home-screen widget: a private read-only link ---- */
+  if (p === "/api/widget/token") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const f = path.join(DATA_DIR, "widget-" + me.id + ".json");
+    let w = {}; try { w = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) {}
+    if (req.method === "POST") {
+      let b = {}; try { b = JSON.parse(await body(req) || "{}"); } catch (e) {}
+      if (b.off) { try { fs.unlinkSync(f); } catch (e) {} return json(res, 200, { on: false }); }
+      const token = require("node:crypto").randomBytes(24).toString("base64url");
+      fs.writeFileSync(f, JSON.stringify({ hash: require("node:crypto").createHash("sha256").update(token).digest("hex"), at: Date.now() }), { mode: 0o600 });
+      return json(res, 200, { on: true, token });
+    }
+    return json(res, 200, { on: !!w.hash, at: w.at || 0 });
+  }
+  if (p === "/api/widget" && req.method === "GET") {
+    const token = url.searchParams.get("t") || "";
+    const hash = require("node:crypto").createHash("sha256").update(token).digest("hex");
+    const users = (readJson(usersFile()) || { users: [] }).users;
+    const u = users.find((x) => { try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "widget-" + x.id + ".json"), "utf8")).hash === hash; } catch (e) { return false; } });
+    if (!token || !u) return json(res, 401, { error: "This widget link was switched off. Make a new one in MYDAY." });
+    const st = readJson(stateFile(u.id, "myday_proto_v1"));
+    let v = {}; try { v = JSON.parse(st.value); } catch (e) {}
+    const r = rulesLib.read(DATA_DIR, u.id), day = rulesLib.localToday(r);
+    const open = (v.tasks || []).filter((t) => (t.repeat || "none") === "none" && t.date && t.date <= day && !(t.done && t.done[t.date]));
+    open.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.time || "99").localeCompare(b.time || "99")));
+    const bids = (v.tasks || []).filter((t) => t.deadline && t.deadline >= day && /bid/i.test(t.title) && !(t.done && t.done[t.date]))
+      .sort((a, b) => (a.deadline + (a.deadlineTime || "")).localeCompare(b.deadline + (b.deadlineTime || ""))).slice(0, 3);
+    const inv = watcher.invoices(DATA_DIR, u.id, r.capturedSince, watcherSettings(u).ownDomains, watcherSettings(u).ownNames).filter((x) => x.status === "review").length;
+    return json(res, 200, { day, next: open[0] ? { title: open[0].title, time: open[0].time || "", overdue: open[0].date < day } : null, today: open.length,
+      bids: bids.map((t) => ({ title: t.title.replace(/^Review bid file:\s*/i, ""), when: t.deadline + (t.deadlineTime ? " " + t.deadlineTime : "") })), invoices: inv });
+  }
+
   /* ---- Apple Trade-In values ---- */
   if (p.startsWith("/api/tradein")) {
     const me = userFromSession(sessionFor(req));
