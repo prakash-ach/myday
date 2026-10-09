@@ -25,6 +25,8 @@ const outbox = require("./lib/outbox");
 const newsLib = require("./lib/news");
 const mergeLib = require("./lib/merge");
 const inboxLib = require("./lib/inbox");
+const memory = require("./lib/memory");
+const tradein = require("./lib/tradein");
 /* Recent saved versions, so a save can be merged against the version that
    device started from. Kept in memory; after a restart the merge just keeps
    everything from both sides. */
@@ -189,7 +191,7 @@ async function serveStatic(req, res, urlPath) {
  */
 const ALL_SECTIONS = ["dashboard", "today", "tasks", "calendar", "projects",
   "auctions", "automation", "development", "notes", "goals", "habits", "settings",
-  "captured", "news", "ai-chat", "ai-mail"];
+  "captured", "news", "tradein", "ai-chat", "ai-mail"];
 /* The two AI switches ride along with the sections, so the owner turns them
    on per person in Settings → Team. Nobody but the owner has them until then:
    "ai-chat" is the assistant, "ai-mail" lets AI read their Gmail for tasks. */
@@ -821,11 +823,61 @@ const server = http.createServer(async (req, res) => {
     const feed = watcher.readFeed(DATA_DIR, me.id);
     const ids = new Set(Array.isArray(b.ids) ? b.ids : [b.id]);
     let n = 0;
+    const decidedNow = [];
     (feed.items || []).forEach((x) => {
-      if (ids.has(x.id) && !x.decided) { x.decided = b.decision || "handled"; x.decidedAt = Date.now(); n++; }
+      if (ids.has(x.id) && !x.decided) { x.decided = b.decision || "handled"; x.decidedAt = Date.now(); n++; decidedNow.push(x); }
     });
     watcher.writeFeed(DATA_DIR, me.id, feed);
+    // Learn from it: what you do with this kind of email.
+    for (const x of decidedNow) if (x.decided === "ignored" || x.decided === "approved") {
+      try { memory.learn(DATA_DIR, me.id, "inbox", { from: x.from, subject: x.subject, choice: x.decided }); } catch (e) {}
+    }
     return json(res, 200, { updated: n });
+  }
+
+  /* ---- Apple Trade-In values ---- */
+  if (p.startsWith("/api/tradein")) {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (sectionsFor(me.username).indexOf("tradein") < 0) return json(res, 403, { error: "The owner hasn't switched Apple Trade-In on for you." });
+    if (p === "/api/tradein" && req.method === "GET") return json(res, 200, tradein.view(DATA_DIR));
+    if (p === "/api/tradein/check" && req.method === "POST") {
+      const v = tradein.view(DATA_DIR);
+      if (Date.now() - (v.lastCheck || 0) < 10 * 60e3) return json(res, 200, { ...v, note: "Checked less than 10 minutes ago" });
+      const r = await tradein.check(DATA_DIR, { manual: true });
+      return json(res, 200, { ...tradein.view(DATA_DIR), result: r });
+    }
+    if (p === "/api/tradein/paste" && req.method === "POST") {
+      let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+      const r = tradein.paste(DATA_DIR, String(b.text || "").slice(0, 200000), b.label);
+      return json(res, r.error ? 400 : 200, r.error ? r : { ...tradein.view(DATA_DIR), result: r });
+    }
+    return json(res, 404, { error: "not found" });
+  }
+
+  /* ---- Memory: what the AI knows and has learned ---- */
+  if (p.startsWith("/api/memory")) {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    let b = {};
+    if (req.method === "POST") { try { b = JSON.parse(await body(req) || "{}"); } catch (e) { return json(res, 400, { error: "bad body" }); } }
+    if (p === "/api/memory/learn" && req.method === "POST") {
+      const kind = ["invoice", "suggestion"].includes(b.kind) ? b.kind : null;
+      if (!kind) return json(res, 400, { error: "unknown kind" });
+      for (const d of (Array.isArray(b.items) ? b.items : [b.data]).slice(0, 60)) if (d) memory.learn(DATA_DIR, me.id, kind, d);
+      return json(res, 200, { ok: true });
+    }
+    if (p === "/api/memory/notes" && req.method === "POST") { memory.setNotes(DATA_DIR, me.id, b.notes || ""); return json(res, 200, { ok: true }); }
+    if (p === "/api/memory/forget" && req.method === "POST") { memory.forget(DATA_DIR, me.id, b.at); return json(res, 200, { ok: true }); }
+    if (p === "/api/memory" && req.method === "GET") {
+      const ws = watcherSettings(me), r = rulesLib.read(DATA_DIR, me.id);
+      const people = (r.reviewSenders || []).map((s) => `${s.name} (${(s.emails || []).join(", ")})`);
+      const m = memory.load(DATA_DIR, me.id);
+      return json(res, 200, { facts: memory.facts(DATA_DIR, me.id, { ownDomains: ws.ownDomains, people, timezone: rulesLib.zone(r) }), notes: m.notes,
+        lessons: m.lessons.slice().reverse().slice(0, 200), total: m.lessons.length,
+        byKind: m.lessons.reduce((o, x) => ((o[x.kind] = (o[x.kind] || 0) + 1), o), {}) });
+    }
+    return json(res, 404, { error: "not found" });
   }
 
   /* ---- The Automation inbox view (read-only) ---- */
@@ -837,7 +889,9 @@ const server = http.createServer(async (req, res) => {
     const r = rulesLib.read(DATA_DIR, me.id);
     const inv = watcher.invoices(DATA_DIR, me.id, r.capturedSince, ws.ownDomains, ws.ownNames);
     const sinceDay = r.inboxSince ? new Intl.DateTimeFormat("en-CA", { timeZone: rulesLib.zone(r), year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(r.inboxSince)) : "";
-    const view = inboxLib.build(feed, { ownDomains: ws.ownDomains, toReviewInvoices: inv.filter((x) => x.status === "review").length, since: r.inboxSince, sinceDay });
+    const mem = memory.load(DATA_DIR, me.id);
+    const view = inboxLib.build(feed, { ownDomains: ws.ownDomains, toReviewInvoices: inv.filter((x) => x.status === "review").length, since: r.inboxSince, sinceDay,
+      learned: (item) => memory.inboxHint(mem, item) });
     const tok = google.readTokens(DATA_DIR, me.id);
     return json(res, 200, { ...view, connected: !!tok, email: (tok && tok.email) || "",
       lastRun: feed.stats && feed.stats.lastRun, looked: feed.stats && feed.stats.looked });
@@ -870,6 +924,8 @@ const server = http.createServer(async (req, res) => {
     feed.viewOverrides = feed.viewOverrides || {};
     for (const id of (Array.isArray(b.ids) ? b.ids : []).slice(0, 100).map(String)) {
       if (b.to === "needs") feed.viewOverrides[id] = "needs"; else delete feed.viewOverrides[id];
+      const x = b.to === "needs" && (feed.items || []).find((i) => i.id === id);
+      if (x) { try { memory.learn(DATA_DIR, me.id, "inbox", { from: x.from, subject: x.subject, choice: "needs" }); } catch (e) {} }
     }
     watcher.writeFeed(DATA_DIR, me.id, feed);
     return json(res, 200, { ok: true });
@@ -1106,8 +1162,15 @@ const server = http.createServer(async (req, res) => {
           })),
         };
       }
+      const mm = memory.load(DATA_DIR, me.id);
+      let ti = "";
+      if (sectionsFor(me.username).indexOf("tradein") >= 0) {
+        const tv = tradein.view(DATA_DIR);
+        if (tv.rows.length) ti = `\nApple Trade-In "up to" values (US, best condition) as of ${new Date(tv.updated).toISOString().slice(0, 10)}: ` +
+          tv.rows.slice(0, 80).map((x) => `${x.model} $${x.value}${x.change ? ` (${x.change > 0 ? "+" : ""}${x.change})` : ""}`).join("; ") + ". Say they're Apple's best-condition offers.\n";
+      }
       const r = await ai.chat(DATA_DIR, me.id, {
-        mail,
+        mail, memory: (mm.notes ? `\nThings Prakash wants you to know: ${mm.notes}\n` : "") + ti,
         messages: b.messages, context: b.context, assistantName: b.assistantName,
         userName: me.displayName || me.username,
       });
@@ -1175,6 +1238,7 @@ watcher.start(DATA_DIR, {
 });
 
 if (process.env.NEWS_OFF !== "1") newsLib.start(DATA_DIR);
+if (process.env.TRADEIN_OFF !== "1") tradein.start(DATA_DIR);
 
 server.listen(PORT, "127.0.0.1", () => {
   const n = (readJson(usersFile()) || { users: [] }).users.length;

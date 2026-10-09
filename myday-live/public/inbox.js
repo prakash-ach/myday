@@ -120,6 +120,10 @@
       n++;
     }
     await decide(row.ids, "approved");
+    // Teach memory which suggestions you take and which you skip.
+    const picked = new Set(ticked(row));
+    const items = row.tasks.map((t) => ({ from: row.from, subject: row.subject, title: t.title, choice: picked.has(t) ? "added" : "skipped" }));
+    if (items.length) post("/api/memory/learn", { kind: "suggestion", items });
     return n;
   }
   async function act(rows, what) {
@@ -202,6 +206,7 @@
         D && D.toReviewInvoices ? h("button", { class: "mdx-btn hot", onclick: () => c && c.setView("captured") }, `🧾 ${D.toReviewInvoices} invoice${D.toReviewInvoices === 1 ? "" : "s"} to review →`) : null,
         h("button", { class: "mdx-btn", onclick: () => window.MYDAYRules && window.MYDAYRules.open() }, "⚙ Auto rules"),
         h("button", { class: "mdx-btn", onclick: () => window.MYDAYHealth && window.MYDAYHealth.open() }, "🩺 Health"),
+        h("button", { class: "mdx-btn", title: "What the AI knows about your world, and what it has learned from you", onclick: () => window.MYDAYMemory && window.MYDAYMemory.open() }, "🧠 Memory"),
         h("button", { class: "mdx-btn", title: "The previous Automation screen, with Gmail settings", onclick: () => c && c.setView("automation-classic") }, "Classic view"))));
 
     if (D) {

@@ -245,11 +245,15 @@
       item, doc, status: "won", supplier: m ? m.name : "", matchHow: m ? m.how : "", newName: doc.supplier || "",
       date: doc.date || item.date || (c && c.today) || "", reference: doc.reference || "", auction: doc.auction || "", inTable,
       rows: doc.rows.map((r) => { const t = tidyModel(r), sz = mapSize(r.oem, t.model, r.size);
-        return { on: true, raw: r.raw || "", rawGrade: r.grade || "", oem: r.oem || "", ...t, modelHow: [t.modelHow, sz.how].filter(Boolean).join(" · "), size: sz.size,
+        return { on: true, raw: r.raw || "", rawGrade: r.grade || "", oem: r.oem || "", ...t, aiModel: t.model, aiSize: sz.size, modelHow: [t.modelHow, sz.how].filter(Boolean).join(" · "), size: sz.size,
         carrier: r.carrier || "", qty: r.qty || 1, price: r.price || 0, issues: (r.issues || []).filter((x) => !/grade/.test(x)),
         confidence: r.confidence == null ? 1 : r.confidence, grade: "", gradeOk: false, gradeHow: "" }; }),
     };
     if (!m) S.open.newName = suggestName(doc, S.open.rows) || S.open.newName;
+    // Same make, model, size, grade, carrier and price → one line with the total quantity.
+    S.open.rowsSeparate = S.open.rows;
+    S.open.rows = combineRows(S.open.rows);
+    S.open.combined = S.open.rows.length < S.open.rowsSeparate.length;
     regrade();
     if (S.toast) { S.toast.remove(); S.toast = null; }
     draw();
@@ -404,6 +408,9 @@
           h("select", { class: "mdi-in", onchange: (e) => { O.status = e.target.value; } },
             [["won", "Won / bought"], ["pending", "Pending"], ["lost", "Lost"]].map(([v, l]) => h("option", { value: v, selected: O.status === v ? true : null }, l))))),
       h("div", { class: "mdi-sum" },
+        O.rowsSeparate && O.rowsSeparate.length > 1 ? h("label", { style: "display:flex;align-items:center;gap:5px;cursor:pointer", title: "Lines with the same make, model, size, grade, carrier and price become one line with the total quantity" },
+          h("input", { type: "checkbox", class: "mdi-ck", checked: O.rows !== O.rowsSeparate, onchange: (e) => { O.rows = e.target.checked ? combineRows(O.rowsSeparate) : O.rowsSeparate; regrade(); draw(); } }),
+          O.combined ? `Combine identical lines (${O.rowsSeparate.length} → ${combineRows(O.rowsSeparate).length})` : "Combine identical lines") : null,
         h("span", null, h("b", null, on.length), ` of ${O.rows.length} lines`),
         h("span", null, h("b", null, qty), " devices"),
         h("span", null, "Lines ", h("b", null, money(lines))),
@@ -447,6 +454,20 @@
     const shipEach = ship || complete ? Math.round((ship / units) * 100) / 100 : null;
     const bits = [shipEach ? `+${money(shipEach)} each shipping/fees` : null, premium ? `${premium}% premium` : null, taxPct ? `${taxPct}% tax` : null].filter(Boolean);
     return { premium, tax: taxPct, shipEach, note: bits.length ? bits.join(" · ") : complete ? "no extra fees" : "" };
+  }
+
+  /* Invoices often list each phone or watch on its own line. Identical lines
+     become one, with their quantities added up. */
+  function combineRows(rows) {
+    const out = [], by = new Map();
+    for (const r of rows) {
+      const k = [r.oem, r.model, r.size, r.rawGrade, r.carrier, Number(r.price).toFixed(2)].map((x) => String(x || "").trim().toLowerCase()).join("|");
+      const g = by.get(k);
+      if (g) { g.qty = (+g.qty || 0) + (+r.qty || 0); g.lines++; g.issues = [...new Set([...g.issues, ...r.issues])]; g.confidence = Math.min(g.confidence, r.confidence); }
+      else { const c = { ...r, issues: [...r.issues], lines: 1 }; by.set(k, c); out.push(c); }
+    }
+    for (const r of out) if (r.lines > 1) r.raw = `${r.lines} identical lines combined · ${r.raw}`;
+    return out;
   }
 
   /* Grades typed by hand that the supplier doesn't have yet. */
@@ -517,6 +538,17 @@
     next.grades[supplier] = { ...(next.grades[supplier] || {}) };
     rows.forEach((r) => { const k = norm(String(r.rawGrade || "").replace(/\b(grade|condition|cond)\b/gi, "")); if (k && r.grade) next.grades[supplier][k] = r.grade; });
     try { c.setPref({ invoiceMap: next }); } catch (e) {}
+
+    // Teach MYDAY's memory what you corrected, so the AI does better next time.
+    const lessons = [];
+    if (O.matchHow === "you picked" || O.matchHow === "added just now") lessons.push({ field: "supplier", ai: doc.supplier || "(none)", yours: supplier });
+    for (const r of rows) {
+      if (/you picked|you typed/.test(r.gradeHow || "")) lessons.push({ field: "grade", ai: r.rawGrade || "(none)", yours: r.grade, model: r.model });
+      if (r.aiModel && r.model.trim() !== r.aiModel) lessons.push({ field: "model", ai: r.aiModel, yours: r.model.trim() });
+      if (r.aiSize && r.size.trim() !== r.aiSize) lessons.push({ field: "size", ai: r.aiSize, yours: r.size.trim(), model: r.model });
+    }
+    if (lessons.length) fetch("/api/memory/learn", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "invoice", items: lessons.slice(0, 40).map((l) => ({ ...l, from: O.item.from, supplier })) }) }).catch(() => {});
 
     try {
       await fetch("/api/automation/logged", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },

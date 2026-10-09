@@ -384,6 +384,87 @@ sending mail, bidding, paying, deleting or changing anything in Gmail.
   everything restored the older view; older mail first read after the start
   stayed hidden.
 
+### 8 October 2026 — identical lines combined; Auctions compact view and select by date
+- Netra-style invoices list every unit on its own line. The invoice review now
+  combines lines with the same make, model, size, grade, carrier and price
+  into one line with the summed quantity ("Combine identical lines (24 → 4)",
+  on by default, untick to see them separately). New logging only.
+- **Auctions → ▤ Compact view** (`public/compact.js`): the Auction table with
+  identical entries (date, supplier, make, model, size, grade, price, fees,
+  status) shown as one row with summed qty and "× N lines" — display only.
+  Date filters (All, Today, Yesterday, Last 7 days, From–To), supplier,
+  search, Select all. Actions only on tap + confirm: set status, download
+  CSV, "Combine into one line each" (keeps the first entry with the summed
+  qty and merged notes, removes the repeats), delete.
+- Tested: 24-line Netra invoice → 4 entries (9×$132, 1×$145, 13×AB, 1×B);
+  14 existing lines → 4 rows, combine kept all 34 units and kept different
+  prices/grades apart.
+
+### 8 October 2026 — AI core, part 1: shared memory and learning from corrections
+- `lib/memory.js` (own file `memory-<user>.json`; never touches tasks, mail,
+  invoices or auctions):
+  - **facts** read live from MYDAY (suppliers + grades, makes/models,
+    categories, review senders, company domains, timezone);
+  - **notes** "Things to know", written by Prakash;
+  - **lessons** learned from corrections, de-duplicated with a count:
+    inbox (Ignore / Add / Put back — recorded server-side in decide and
+    view-override), suggestion (added vs skipped, from the new inbox's Add),
+    invoice (supplier picked/added, grade picked/typed, model or size edited —
+    sent from the invoice review).
+- **Used**: the inbox applies lessons first (2+ ignores of the same sender +
+  subject pattern and none kept → Handled quietly "you've ignored 2 like this
+  from …"; any kept/put back → always shown). `promptBlock()` gives the email
+  reader and invoice reader his notes plus the ~10 most relevant lessons
+  (same sender/pattern/supplier, recent, repeated), labelled as coming from
+  him, not the email; Max gets the notes.
+- **🧠 AI memory** panel (`public/memory.js`; Automation → 🧠 Memory, and
+  Settings → AI memory): facts, editable notes, lessons in plain English by
+  type with Forget / Forget all. Routes `/api/memory`, `/learn`, `/notes`,
+  `/forget`.
+- Tested: ignore 2 "Weekly specials" → the next 3 quiet with that reason; put
+  one back → all shown again and kept separately as a lesson; the AI prompt
+  for the next email from that vendor contained the lesson; invoice grade and
+  model fixes recorded; notes saved; forget works.
+- Next for the AI core: Max as the one brain across all features (data +
+  actions registered per feature), proactive suggestions, model routing,
+  accuracy page from real invoices and corrections.
+
+### 8 October 2026 — Apple Trade-In section
+- New sidebar section **Apple Trade-In** (Team section "tradein";
+  `lib/tradein.js`, `public/tradein.js`, `/api/tradein`, `/check`, `/paste`).
+- Reads Apple's public US trade-in page (apple.com/shop/trade-in) at most once
+  a day (timer looks every 3 h; manual "Check Apple now" limited to once per
+  10 min). Polite: checks Apple's robots.txt first and doesn't read the page
+  if it's disallowed; identifying user agent; never logs in or submits.
+- Fallback / alternative: "Paste from Apple" — paste Apple's page or a
+  9to5Mac / MacRumors list; the reader picks out "Model … Up to $N" and
+  "Model: $N" (section headings glued to model names are stripped).
+- Snapshots kept when values change (last 60): change ▲/▼ with date, and a
+  per-model history. Tabs iPhone / iPad / Mac / Apple Watch / Android.
+- Next to Apple's value: his 30-day average buy price for the model from the
+  Auction table (qty-weighted, all grades/sizes, excluding lost) and the gap.
+- Tested against a pretend Apple site: robots block → not read, clear
+  message; paste → 5 values; allowed → 8 values; later change → ▲$25 / ▼$20
+  with history; Android tab; buy-price comparison. The real page's layout
+  couldn't be checked from the build sandbox — first live check will tell;
+  paste always works.
+- TRADEIN_OFF=1 stops the timer; TRADEIN_PAGE / TRADEIN_ROBOTS override the
+  URLs (testing only).
+
+### 8 October 2026 — type a model, see Apple's trade-in value
+- Typing in MYDAY's top search bar ("iphone 13", "15 pro", "galaxy s24")
+  drops a card under it with matching Apple Trade-In models, Apple's "up to"
+  value, the latest change, and his 30-day average buy price; clicking one
+  opens Apple Trade-In with that search. Only shows for device-like text
+  (nothing for "call ramesh"); uses a 30-minute cache; hidden for people
+  without the section.
+- The Apple Trade-In page has its own search box (filters across all tabs).
+- Max gets the current trade-in values (if he has the section), labelled as
+  Apple's best-condition offers.
+- Tested: "iphone 13" → iPhone 13 $250 · you paid $217, iPhone 13 Pro $330;
+  click → page filtered; "galaxy" → S24 Ultra; unrelated text → no card; the
+  chat prompt contained the values.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

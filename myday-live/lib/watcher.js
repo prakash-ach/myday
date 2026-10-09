@@ -15,6 +15,7 @@ const { propose } = require("./propose");
 const ai = require("./ai");
 const rulesLib = require("./rules");
 const outbox = require("./outbox");
+const memory = require("./memory");
 
 const feedFile = (dir, userId) => path.join(dir, "feed-" + userId + ".json");
 
@@ -74,6 +75,7 @@ async function readOne(dir, userId, id, options, run) {
                 filename: att.filename, from: msg.from, subject: msg.subject, text, images,
                 imageType: doc.kind === "image" ? (att.mimeType || "image/png") : "image/png",
                 makes: options.makes || [], models: options.models || {},
+                memory: memory.promptBlock(dir, userId, { from: msg.from, subject: msg.subject }),
               });
               if (r.isInvoice && r.lines.length) {
                 Object.assign(doc, {
@@ -130,7 +132,8 @@ async function readOne(dir, userId, id, options, run) {
         id, threadId: msg.threadId, from: msg.from, to: msg.to, subject: msg.subject,
         body: msg.body, date: msg.date, attachmentText: attText,
       }, { today: run.today, categories: options.categories, userName: options.userName,
-           ownDomains: options.ownDomains, promoHints: options.rules && options.rules.promoHints });
+           ownDomains: options.ownDomains, promoHints: options.rules && options.rules.promoHints,
+           memory: memory.promptBlock(dir, userId, { from: msg.from, subject: msg.subject }) });
       aiSummary = r.summary || null;
       classify = r.classify || null;
       /* A bid sheet lists lots to bid on; it isn't a bill. If the AI's

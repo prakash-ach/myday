@@ -68,7 +68,7 @@ function unsafe(task, item, quiet) {
   return "";
 }
 
-function build(feed, { ownDomains = [], toReviewInvoices = 0, since = 0, sinceDay = "" } = {}) {
+function build(feed, { ownDomains = [], toReviewInvoices = 0, since = 0, sinceDay = "", learned = null } = {}) {
   const own = (from) => { const d = domainOf(from); return ownDomains.some((o) => o && (d === o.toLowerCase() || d.endsWith("." + o.toLowerCase()))); };
   const overrides = feed.viewOverrides || {};
   const waiting = (feed.items || []).filter((x) => !x.decided);
@@ -87,7 +87,13 @@ function build(feed, { ownDomains = [], toReviewInvoices = 0, since = 0, sinceDa
   for (const [key, list] of groups) {
     list.sort((a, b) => (b.seenAt || 0) - (a.seenAt || 0));
     const lead = list[0];
-    const reasons = list.map((it) => quietReason(it, own));
+    // What you taught MYDAY wins over the built-in guesses.
+    const reasons = list.map((it) => {
+      const L = learned ? learned(it) : { hint: "" };
+      if (L.hint === "needs") return "";
+      if (L.hint === "quiet") return L.why;
+      return quietReason(it, own);
+    });
     const forced = list.some((it) => overrides[it.id] === "needs");
     // Quiet only if every email in the conversation is quiet.
     const quiet = !forced && reasons.every(Boolean) ? reasons[0] : "";
