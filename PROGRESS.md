@@ -549,6 +549,22 @@ Repair Workflow, Costs & Margins, Files & Data Quality. Not deployed by Claude.
   "Repair To Repair" treated as a technician bin as listed; 3 bin/assignee
   disagreements (Nazar Mohammad Rahem, Rashed Naimee) left visible, no alias.
 
+### 12 October 2026 — fix: Repair upload "Couldn't reach the server"
+- Cause: nginx in front of MYDAY has the default 1 MB client_max_body_size;
+  the three CSVs (4.3 MB, ~5.7 MB as base64 JSON) were refused with 413 before
+  reaching MYDAY, and the screen reported it as a connection failure. The
+  local tests had no nginx in front.
+- Uploads are now gzipped in the browser (CompressionStream) and unzipped on
+  the server (`enc: "gzip"`, 300 MB cap): 5.75 MB → 0.46 MB; stored originals
+  are byte-identical (checked by SHA-256).
+- setup.sh: new nginx sites get `client_max_body_size 60m`; existing MYDAY
+  sites get it added once (after each server_name, incl. certbot blocks),
+  with a timestamped backup and automatic rollback if `nginx -t` fails.
+- The Repair screen now reads non-JSON answers and says what happened (413
+  upload limit, 502/504 MYDAY restarting, other HTTP status).
+- Tested through a stand-in for nginx's 1 MB limit: compressed upload works;
+  uncompressed shows the upload-limit message.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

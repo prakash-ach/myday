@@ -916,7 +916,9 @@ const server = http.createServer(async (req, res) => {
     const who = me.displayName || me.username;
     const readBody = async () => { try { return JSON.parse(await body(req)); } catch (e) { return null; } };
     const filesFrom = (b) => (Array.isArray(b && b.files) ? b.files : []).slice(0, 3).map((f) => {
-      const buf = Buffer.from(String(f.b64 || ""), "base64");
+      let buf = Buffer.from(String(f.b64 || ""), "base64");
+      // Sent gzipped from the browser: unzip back to the exact original bytes.
+      if (f.enc === "gzip") buf = require("node:zlib").gunzipSync(buf, { maxOutputLength: 300 * 1024 * 1024 });
       const x = repair.inspect(String(f.name || "file.csv").slice(0, 200), buf);
       return { ...x, buf, role: f.role || x.info.role };
     });

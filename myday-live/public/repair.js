@@ -27,8 +27,19 @@
     catch (e) { S.err = "Couldn't reach the server"; }
     S.loading = false; draw();
   }
-  const post = (u, b) => fetch(u, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(b || {}) })
-    .then((r) => r.json().then((j) => ({ ok: r.ok, j }))).catch(() => ({ ok: false, j: { error: "Couldn't reach the server" } }));
+  async function post(u, b) {
+    let r;
+    try { r = await fetch(u, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(b || {}) }); }
+    catch (e) { return { ok: false, j: { error: "Couldn't reach the server — check your connection and try again." } }; }
+    const text = await r.text();
+    try { return { ok: r.ok, j: JSON.parse(text) }; }
+    catch (e) {
+      // Not MYDAY answering — usually the web server in front of it.
+      return { ok: false, j: { error: r.status === 413 ? "The web server refused the upload as too large (nginx upload limit). Run the latest setup.sh on the droplet, which raises it to 60 MB."
+        : r.status === 502 || r.status === 504 ? `The web server couldn't get an answer from MYDAY (HTTP ${r.status}) — it may be restarting; try again in a minute.`
+        : `Unexpected answer from the server (HTTP ${r.status}).` } };
+    }
+  }
 
   /* ---------- filtering (shared by every tab) ---------- */
   function devMatches(d, f, skip) {
@@ -309,13 +320,22 @@
       ${U.files ? `<div class="rp-row"><button class="rp-pri-btn" data-apply ${U.validation && U.validation.ok && !U.busy ? "" : "disabled"}>Apply this batch</button><span class="rp-dim">The current batch stays active unless this one passes. Originals are kept unchanged.</span></div>` : ""}
       </div></div>`;
   }
-  const b64 = (file) => new Promise((res) => { const r = new FileReader(); r.onload = () => { const a = new Uint8Array(r.result); let s = ""; for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); res(btoa(s)); }; r.readAsArrayBuffer(file); });
+  const toB64 = (buf) => { const a = new Uint8Array(buf); let s = ""; for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
+  /* Files are gzipped in the browser before sending (CSV shrinks ~7×), and the
+     server unzips them back to the exact original bytes. Browsers without
+     CompressionStream send them as they are. */
+  async function pack(file) {
+    if (typeof CompressionStream === "function") {
+      try { return { b64: toB64(await new Response(file.stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer()), enc: "gzip" }; } catch (e) {}
+    }
+    return { b64: toB64(await file.arrayBuffer()), enc: "" };
+  }
   async function onUpChange(e) {
     const U = S.upload, t = e.target;
     if (t.hasAttribute("data-files")) {
       const list = [...t.files].slice(0, 3); if (!list.length) return;
       U.busy = "Reading and checking the files…"; U.error = ""; drawUpload();
-      U.raw = await Promise.all(list.map(async (f) => ({ name: f.name, b64: await b64(f) })));
+      U.raw = await Promise.all(list.map(async (f) => ({ name: f.name, ...(await pack(f)) })));
       const { ok, j } = await post("/api/repair/inspect", { files: U.raw });
       U.busy = ""; if (!ok) { U.error = j.error || "Couldn't check the files"; return drawUpload(); }
       U.files = j.files; U.roles = j.files.map((f) => (["repair", "sales", "inventory"].includes(f.role) ? f.role : "")); U.validation = j.validation; drawUpload();

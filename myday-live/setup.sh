@@ -192,6 +192,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name $DOMAIN;
+    client_max_body_size 60m;   # uploads (repair CSVs, photos) are bigger than nginx's 1 MB default
 
     location / {
         proxy_pass http://127.0.0.1:$PORT;
@@ -205,6 +206,13 @@ server {
 NGINX
     ln -sf "$SITE" /etc/nginx/sites-enabled/myday
     ok "nginx site added, your other sites untouched"
+  fi
+  # Existing sites predate the upload limit: add it once, keep a backup, undo if nginx objects.
+  if ! grep -q "client_max_body_size" "$SITE"; then
+    cp "$SITE" "$SITE.backup.$(date +%Y%m%d%H%M%S)"
+    sed -i '/server_name/a\    client_max_body_size 60m;' "$SITE"
+    if nginx -t >/dev/null 2>&1; then ok "nginx upload limit raised to 60 MB for MYDAY"
+    else cp "$(ls -t "$SITE".backup.* | head -1)" "$SITE"; echo "    Couldn't raise the nginx upload limit automatically — the site is unchanged."; fi
   fi
   nginx -t >/dev/null 2>&1 || die "nginx rejected the new config. Nothing reloaded, your sites are still up."
   systemctl reload nginx
