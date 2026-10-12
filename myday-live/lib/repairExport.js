@@ -22,7 +22,7 @@ function build(m, { devices: devIdx, skus: skuKeys, filters, user }) {
   const ov = [
     ["Devices in this export", D.length, "filtered devices"], ["SKUs in this export", SK.length, "filtered SKUs"],
     ...m.workflowOrder.map((w) => [w, count((d) => d.wf === w), "devices"]),
-    ["Unmapped devices available for assessment", count((d) => d.wf === "Not mapped" && !d.elig.length), "devices (no eligibility flags)"],
+    ["Devices available for assessment / assignment", count((d) => (d.wf === "Not mapped" || d.wf === "Waiting for repair") && !d.elig.length), "Not mapped + Waiting for repair, no eligibility flags"],
     ["Red SKUs (highest demand priority)", SK.filter((s) => s.priority === "red").length, "SKUs"],
     ["Selling stockouts with no repair candidates", SK.filter((s) => s.priority === "red" && s.candidates === 0).length, "SKUs — purchasing/substitution"],
     ["Devices with complete economics", econ.length, `of ${D.length}`],
@@ -93,7 +93,7 @@ function build(m, { devices: devIdx, skus: skuKeys, filters, user }) {
       { text: "daily_demand = monthly_sales / sales_window_days · coverage_days = available / daily_demand (undefined when demand is 0) · target_units = ceil(daily_demand × target_cover_days) · shortage = max(0, target − available) · assessment limit = min(unassigned assessment candidates, shortage) — provisional, not a work order." },
       { text: "recorded_spread = selling price − reported total cost · calculated margin = spread / selling price × 100 (only with positive selling price) · weighted margin = total spread / matched selling value. Missing Total Cost leaves spread and margin unknown. A recorded spread is not a forecast of repair profit." },
       { text: "Priority colours: Red — sells with no stock or under the low-stock days · Amber — below target cover · Green — meets target · Gray — no recorded sales · Blue — presold, no action · Purple — needs review (unknown sales/stock, conflicts, duplicates, unconfirmed assignees, bad bins)." },
-      { text: "Workflow: presold first; Bin-N001 = repair done in month N; Cleaning → Arika; technician bins and recognised Assigned To → Repair in Progress; no power Device → Board-level; OVERSEAS UNLOCKED DEVICES → Blacklisted - Leave; Testers For RMA/QC → RMA/QC - Leave; Bibek bins → Give to Bibek (With Bibek only with a recorded handoff); unknown assignees → Assignment review; other bins → Not mapped." },
+      { text: "Workflow: presold first; Bin-N001 = repair done in month N; Cleaning → Arika; Repair To Repair → Waiting for repair (not started); technician bins and recognised Assigned To → Repair in Progress; no power Device → Board-level; OVERSEAS UNLOCKED DEVICES → Blacklisted - Leave; Testers For RMA/QC → RMA/QC - Leave; Bibek bins → Give to Bibek (With Bibek only with a recorded handoff); unknown assignees → Assignment review; other bins → Not mapped." },
       ...(m.footers || []).map((f) => ({ text: `Footer excluded: ${f.file} line ${f.line} (Monthly ${f.monthly ?? "—"}, Weekly ${f.weekly ?? "—"})` })),
       ...m.quality.filter((q) => q.level !== "info").map((q) => ({ text: `${q.area}: ${q.msg}` })),
     ] },

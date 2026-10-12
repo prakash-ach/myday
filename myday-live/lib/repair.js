@@ -169,10 +169,12 @@ const DEFAULT_SETTINGS = {
   availabilityWarehouse: "Inventory", availabilityQuantity: "first",       // provisional: first number of the Inventory pair
   completeness: "incomplete",                                                // "incomplete" | "complete" (positive-only exports)
   lowMarginPct: 10,
-  technicians: ["Diego Alexander Arce", "Madhav Bhetwal", "mohammad sala uddin", "Nazar", "Rashed Naimi", "Repair To Repair", "Sanjaya Adhikari", "Somnang Ram", "Sulaiman Ahmady", "Tamim Habibi"],
+  technicians: ["Diego Alexander Arce", "Madhav Bhetwal", "mohammad sala uddin", "Nazar", "Rashed Naimi", "Sanjaya Adhikari", "Somnang Ram", "Sulaiman Ahmady", "Tamim Habibi"],
+  queueBins: ["Repair To Repair"],       // waiting to be repaired — not started, not with a technician
   bibekBins: ["UNKNOWN CARRIER LOCKED DEVICE", "Unknown Carrier Lock Device", "UNLOCK SUBMITTED", "UNLOCKED SUBMITTED", "Vendor Return-Return to Supplier"],
 };
-const settings = (dir) => ({ ...DEFAULT_SETTINGS, ...readJ(path.join(root(dir), "settings.json"), {}) });
+const settings = (dir) => ({ ...DEFAULT_SETTINGS, ...readJ(path.join(root(dir), "settings.json"), {}),
+  technicians: DEFAULT_SETTINGS.technicians, bibekBins: DEFAULT_SETTINGS.bibekBins, queueBins: DEFAULT_SETTINGS.queueBins });
 function saveSettings(dir, s) {
   const cur = settings(dir), n = (v, lo, hi, d) => (Number.isFinite(+v) && +v >= lo && +v <= hi ? +v : d);
   const next = {
@@ -234,6 +236,7 @@ const STATUS = {
   process: { status: "Process and Move", action: "Repair done; process and move", owner: "Processing", color: null },
   cleaning: { status: "Cleaning", action: "Check cleaning and give to Arika to move", owner: "Arika", color: null },
   progress: { status: "Repair in Progress", action: "Already assigned; do not reassign.", color: null },
+  queue: { status: "Waiting for repair", action: "Queued for repair — not started; assign to a technician", owner: "Repair queue", color: null },
   board: { status: "Board-level Repair", action: "Give to board-level repair if not already given", owner: "Board-level repair", color: null },
   blacklist: { status: "Blacklisted - Leave", action: "Leave as is; blacklisted", owner: "Leave", color: null },
   testers: { status: "RMA/QC - Leave", action: "Leave with testers as is", owner: "Testers", color: null },
@@ -243,8 +246,8 @@ const STATUS = {
   binReview: { status: "Bin review", action: "Bin looks like a completed-repair bin but doesn't give a valid month — check", color: "purple" },
   unmapped: { status: "Not mapped", action: "Review repair requirement and assignment", owner: "—", color: null },
 };
-const WORKFLOW_ORDER = ["Repair in Progress", "Process and Move", "Cleaning", "Board-level Repair", "Give to Bibek", "With Bibek", "Blacklisted - Leave", "RMA/QC - Leave", "No action - Presold", "Assignment review", "Bin review", "Not mapped"];
-const NOT_CANDIDATE = new Set(WORKFLOW_ORDER.filter((s) => s !== "Not mapped"));
+const WORKFLOW_ORDER = ["Repair in Progress", "Waiting for repair", "Process and Move", "Cleaning", "Board-level Repair", "Give to Bibek", "With Bibek", "Blacklisted - Leave", "RMA/QC - Leave", "No action - Presold", "Assignment review", "Bin review", "Not mapped"];
+const CANDIDATE_WF = new Set(["Not mapped", "Waiting for repair"]);   // nobody has started these
 const ELIGIBILITY = [
   [/black\s*list/i, "Blacklisted"], [/icloud|activation\s*lock|\bfmi\b|find my/i, "Activation lock"], [/\bmdm\b/i, "MDM lock"],
   [/\breject/i, "Rejected"], [/tear\s*down/i, "Teardown"], [/parts?\s*only|for\s*parts/i, "Parts only"],
@@ -263,6 +266,7 @@ function classify(d, S, ov) {
     const n = m ? Number(m[1]) : NaN, month = Math.floor(n / 1000);
     r = m && n >= 1000 && month >= 1 && month <= 12 ? out("process", { doneMonth: month }) : out("binReview");
   } else if (bin === "cleaning") r = out("cleaning");
+  else if ((S.queueBins || []).some((q) => normBin(q) === bin)) r = out("queue");
   else if (tech.has(bin)) r = out("progress", { owner: tech.get(bin) });
   else if (bin === "no power device") r = out("board");
   else if (bin === "overseas unlocked devices") r = out("blacklist");
@@ -398,7 +402,7 @@ function model(dir) {
     else { pr = "green"; why = `${fmt1(s.coverage)} days of stock meets the ${S.targetCoverDays}-day target`; }
     s.priority = pr; s.why = why;
     // Repair pipeline for this SKU.
-    s.candidates = s.devices.filter((i) => devices[i].wf === "Not mapped" && !devices[i].elig.length && !devices[i].flags.includes("Duplicate identifier in this batch")).length;
+    s.candidates = s.devices.filter((i) => CANDIDATE_WF.has(devices[i].wf) && !devices[i].elig.length && !devices[i].flags.includes("Duplicate identifier in this batch")).length;
     s.limit = s.shortage != null ? Math.min(s.candidates, s.shortage) : null;
     s.repairDevices = s.devices.length;
   }

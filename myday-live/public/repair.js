@@ -12,7 +12,10 @@
   const PAGE = 50;
   const S = { host: null, data: null, err: "", loading: false, tab: "overview", f: blankF(), page: { dev: 0, sku: 0 },
     sort: { dev: { k: "priority", dir: 1 }, sku: { k: "priority", dir: 1 } }, skuScope: "all", drawer: null, upload: null, busy: "" };
-  function blankF() { return { q: "", pri: "", wf: "", owner: "", bin: "", issue: "", fin: "", sku: "" }; }
+  function blankF() { return { q: "", pri: "", wf: "", owner: "", bin: "", issue: "", fin: "", sku: "", cand: "" }; }
+  const isCand = (d) => (d.wf === "Not mapped" || d.wf === "Waiting for repair") && !d.elig.length && !d.flags.includes("Duplicate identifier in this batch");
+  /* Each chart counts with every filter except its own, so all its bars keep real numbers. */
+  const facet = (skip) => (S.data ? S.data.devices.filter((d) => devMatches(d, S.f, skip)) : []);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
   const money = (n) => (n == null ? "—" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" }));
   const num = (n, d = 0) => (n == null ? "—" : Number(n).toLocaleString("en-US", { maximumFractionDigits: d }));
@@ -50,6 +53,7 @@
     if (f.bin && skip !== "bin" && (normBin(d.bin) || "(blank)").toLowerCase() !== f.bin.toLowerCase()) return false;
     if (f.issue && skip !== "issue" && !d.issues.includes(f.issue)) return false;
     if (f.sku && skip !== "sku" && d.sku !== f.sku) return false;
+    if (f.cand && skip !== "cand" && !isCand(d)) return false;
     if (f.fin && skip !== "fin") {
       if (f.fin === "complete" && !(d.spread != null && d.money.selling > 0)) return false;
       if (f.fin === "missingTotal" && d.money.total != null) return false;
@@ -59,7 +63,7 @@
     return true;
   }
   const devices = () => (S.data ? S.data.devices.filter((d) => devMatches(d, S.f)) : []);
-  const deviceFilterOn = () => ["wf", "owner", "bin", "issue", "fin"].some((k) => S.f[k]);
+  const deviceFilterOn = () => ["wf", "owner", "bin", "issue", "fin", "cand"].some((k) => S.f[k]);
   function skus() {
     if (!S.data) return [];
     const f = S.f, q = f.q.toLowerCase();
@@ -99,7 +103,7 @@
     const f = S.f, list = [];
     if (f.q) list.push(["q", `Search: "${f.q}"`]); if (f.pri) list.push(["pri", PRI[f.pri]]); if (f.wf) list.push(["wf", "Workflow: " + f.wf]);
     if (f.owner) list.push(["owner", "Owner: " + f.owner]); if (f.bin) list.push(["bin", "Bin: " + f.bin]); if (f.issue) list.push(["issue", "Issue: " + f.issue]);
-    if (f.fin) list.push(["fin", FIN[f.fin]]); if (f.sku) list.push(["sku", "SKU: " + f.sku]);
+    if (f.fin) list.push(["fin", FIN[f.fin]]); if (f.sku) list.push(["sku", "SKU: " + f.sku]); if (f.cand) list.push(["cand", "Unassigned candidates only"]);
     return list.length ? `<div class="rp-chips" aria-label="Active filters">${list.map(([k, l]) => `<span class="rp-chip">${esc(l)}<button data-unset="${k}" aria-label="Remove filter ${esc(l)}">✕</button></span>`).join("")}<button class="rp-link" data-clear>Clear filters</button></div>` : "";
   }
   function econ(list) {
@@ -114,25 +118,33 @@
   function overview() {
     const D = devices(), K = skus(), E = econ(D);
     const wf = (w) => D.filter((d) => d.wf === w).length;
-    const redCand = D.filter((d) => d.priority === "red" && d.wf === "Not mapped" && !d.elig.length).length;
+    const redCand = D.filter((d) => d.priority === "red" && isCand(d)).length;
+    const byPri = facet("pri"), skuPriPool = (() => { const keep = S.f.pri; S.f.pri = ""; const l = skus(); S.f.pri = keep; return l; })();
+    const priCards = ["red", "amber", "purple", "green", "gray", "blue"].map((k) => {
+      const l = byPri.filter((d) => d.priority === k), cost = l.reduce((n, d) => n + (d.money.total || 0), 0), sk = new Set(l.map((d) => d.sku)).size;
+      return `<button class="rp-pcard ${k} ${S.f.pri === k ? "on" : ""}" data-act="pri:${k}" aria-pressed="${S.f.pri === k}" aria-label="${esc(PRI[k])}: ${l.length} devices">
+        ${badge(k)}<b>${num(l.length)}</b><span>devices · ${num(sk)} SKU${sk === 1 ? "" : "s"}</span><small>${money(cost)} reported cost</small></button>`;
+    }).join("");
     const stockouts = S.data.skus.filter((s) => s.priority === "red" && s.candidates === 0 && (!S.f.pri || S.f.pri === "red")).length;
     const issues = countBy(D.flatMap((d) => d.issues.map((x) => ({ x }))), (o) => o.x).slice(0, 10);
-    return `<div class="rp-cards">
+    return `<h3 class="rp-h">Devices by priority <small>— each card counts all devices matching your other filters; click to filter</small></h3>
+    <div class="rp-pcards">${priCards}</div>
+    <div class="rp-cards">
       ${card("Devices", num(D.length), `${num(S.data.devices.length)} in batch`)}${card("SKUs", num(K.length), `${num(S.data.skus.length)} across all files`)}
       ${card("Presold — no action", num(wf("No action - Presold")), "good, retained for reporting", "wf:No action - Presold", "blue")}
       ${card("Repair in Progress", num(wf("Repair in Progress")), "already with technicians", "wf:Repair in Progress")}
       ${card("Process & move + cleaning", num(wf("Process and Move") + wf("Cleaning")), `${num(wf("Process and Move"))} processing · ${num(wf("Cleaning"))} cleaning`, "wf:Process and Move")}
-      ${card("Unassigned highest-priority", num(redCand), "red demand, not mapped, no eligibility flags", "redcand", "red")}
+      ${card("Unassigned highest-priority", num(redCand), "red demand · not mapped or waiting for repair · no eligibility flags", "redcand", "red")}
+      ${card("Waiting for repair", num(wf("Waiting for repair")), "Repair To Repair queue — not started", "wf:Waiting for repair")}
       ${card("Reported cost exposure", money(E.cost), `${num(E.complete)} devices with complete economics`, "fin:complete")}
       ${card("Missing Total Cost", num(E.missingTotal), `of ${num(E.n)} devices — spread unknown`, "fin:missingTotal", "purple")}
       ${card("Selling stockouts, no repair candidate", num(stockouts), "purchasing / substitution gap", "nocand", "red")}
     </div>
     <div class="rp-grid">
-      ${bars("Devices by priority", ["red", "amber", "purple", "green", "gray", "blue"].map((k) => ({ k, label: PRI[k], n: D.filter((d) => d.priority === k).length, color: k, badge: true, on: S.f.pri === k })), "pri")}
-      ${bars("Workflow", S.data.workflowOrder.map((w) => ({ k: w, label: w, n: wf(w), on: S.f.wf === w })).filter((r) => r.n), "wf")}
-      ${bars("Technician workload (Repair in Progress)", countBy(D.filter((d) => d.wf === "Repair in Progress"), (d) => d.owner).map(([k, n]) => ({ k, label: k, n, on: S.f.owner === k })), "owner")}
-      ${bars("Most common repair issues", issues.map(([k, n]) => ({ k, label: k, n, on: S.f.issue === k })), "issue", { note: "A device can have several issues." })}
-      ${bars("SKU demand priorities", ["red", "amber", "purple", "green", "gray"].map((k) => ({ k, label: PRI[k], n: K.filter((s) => s.priority === k).length, color: k, badge: true, on: S.f.pri === k })), "skupri",
+      ${bars("Workflow", S.data.workflowOrder.map((w) => ({ k: w, label: w, n: facet("wf").filter((d) => d.wf === w).length, on: S.f.wf === w })).filter((r) => r.n), "wf")}
+      ${bars("Technician workload (Repair in Progress)", countBy(facet("owner").filter((d) => d.wf === "Repair in Progress"), (d) => d.owner).map(([k, n]) => ({ k, label: k, n, on: S.f.owner === k })), "owner")}
+      ${bars("Most common repair issues", countBy(facet("issue").flatMap((d) => d.issues.map((x) => ({ x }))), (o) => o.x).slice(0, 10).map(([k, n]) => ({ k, label: k, n, on: S.f.issue === k })), "issue", { note: "A device can have several issues." })}
+      ${bars("SKU demand priorities", ["red", "amber", "purple", "green", "gray"].map((k) => ({ k, label: PRI[k], n: skuPriPool.filter((s) => s.priority === k).length, color: k, badge: true, on: S.f.pri === k })), "skupri",
         { note: "Counts SKUs (including SKUs with no repair devices)." })}
     </div>`;
   }
@@ -184,9 +196,10 @@
 
   function workflow() {
     const D = devices(), order = S.data.workflowOrder;
-    const q = order.map((w) => { const l = D.filter((d) => d.wf === w); return { w, n: l.length, action: l[0] ? l[0].action : "" }; });
-    const techs = countBy(D.filter((d) => d.wf === "Repair in Progress"), (d) => d.owner);
-    return `<div class="rp-cards">${q.map((x) => card(x.w, num(x.n), esc(x.action || ""), "wf:" + x.w, { "No action - Presold": "blue", "Assignment review": "purple", "Bin review": "purple" }[x.w] || "")).join("")}</div>
+    const pool = facet("wf");
+    const q = order.map((w) => { const l = pool.filter((d) => d.wf === w); return { w, n: l.length, action: l[0] ? l[0].action : "" }; });
+    const techs = countBy(facet("owner").filter((d) => d.wf === "Repair in Progress"), (d) => d.owner);
+    return `<div class="rp-cards">${q.map((x) => card(x.w + (S.f.wf === x.w ? " ✓" : ""), num(x.n), esc(x.action || ""), "wf:" + x.w, { "No action - Presold": "blue", "Assignment review": "purple", "Bin review": "purple" }[x.w] || "")).join("")}</div>
       <div class="rp-grid">${bars("Technician workload", techs.map(([k, n]) => ({ k, label: k, n, on: S.f.owner === k })), "owner", { note: "Technician bins, plus recognised technicians in Assigned To on shelves without a rule." })}
       ${bars("Assignment review by assignee", countBy(D.filter((d) => d.wf === "Assignment review"), (d) => d.owner).map(([k, n]) => ({ k, label: k, n })), "owner", { note: "Not on the technician list — confirm their role." })}</div>
       <h3 class="rp-h">${S.f.wf ? esc(S.f.wf) : "All devices"} <small>— click a queue above to narrow</small></h3>${devTable(D)}`;
@@ -410,7 +423,7 @@
     }
     const act = t.dataset.act; if (!act) return;
     const [k, ...rest] = act.split(":"), v = rest.join(":");
-    if (k === "redcand") { S.f = { ...blankF(), pri: "red", wf: "Not mapped" }; S.tab = "explorer"; S.page.dev = 0; return draw(); }
+    if (k === "redcand") { S.f = { ...blankF(), pri: "red", cand: "1" }; S.tab = "explorer"; S.page.dev = 0; return draw(); }
     if (k === "nocand") { S.skuScope = "nocand"; S.tab = "skus"; S.page.sku = 0; return draw(); }
     if (k === "skupri") return setF("pri", v, "skus");
     const go = S.tab === "overview" ? (k === "sku" ? "skus" : "explorer") : null;
@@ -449,6 +462,12 @@
   .rp-card:disabled{cursor:default}.rp-card:not(:disabled):hover{border-color:var(--a)}.rp-card small{display:block;color:var(--faint);font-size:11px}.rp-card b{display:block;font-size:21px}.rp-card span{display:block;color:var(--muted);font-size:11.5px}
   .rp-card.red{border-left:3px solid #F2545B}.rp-card.blue{border-left:3px solid #4C8DF6}.rp-card.purple{border-left:3px solid #A06CF0}.rp-card.amber{border-left:3px solid #F5C542}
   .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
+  .rp-pcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-bottom:14px}
+  .rp-pcard{text-align:left;border:1px solid var(--line);background:var(--card);border-radius:16px;padding:14px 16px;cursor:pointer;border-top:4px solid var(--c);min-height:118px;
+    display:flex;flex-direction:column;gap:3px;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);transition:transform .15s,box-shadow .15s}
+  .rp-pcard:hover{transform:translateY(-2px)}.rp-pcard.on{box-shadow:0 0 0 2px var(--c) inset}
+  .rp-pcard b{font-size:30px;letter-spacing:-.02em;line-height:1.1;margin-top:4px}.rp-pcard span{color:var(--muted);font-size:12.5px}.rp-pcard small{color:var(--faint);font-size:11.5px}
+  .rp-pcard.red{--c:#F2545B}.rp-pcard.amber{--c:#F5C542}.rp-pcard.purple{--c:#A06CF0}.rp-pcard.green{--c:#22C55E}.rp-pcard.gray{--c:#8C97A8}.rp-pcard.blue{--c:#4C8DF6}
   .rp-panel{border:1px solid var(--line);background:var(--card);border-radius:14px;padding:12px 14px;margin-bottom:12px;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px)}
   .rp-panel h4{margin:0 0 8px;font-size:13.5px}.rp-panel h4 small{color:var(--faint);font-weight:400}
   .rp-bar{display:grid;grid-template-columns:minmax(120px,1.2fr) 2fr 60px;gap:8px;align-items:center;width:100%;border:0;background:none;padding:4px 2px;cursor:pointer;text-align:left;border-radius:8px}

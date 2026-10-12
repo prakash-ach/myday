@@ -565,6 +565,20 @@ Repair Workflow, Costs & Margins, Files & Data Quality. Not deployed by Claude.
 - Tested through a stand-in for nginx's 1 MB limit: compressed upload works;
   uncompressed shows the upload-limit message.
 
+### 12 October 2026 — Repair: priority cards with quantities; Repair To Repair = Waiting for repair
+- Prakash: "Repair To Repair" is not repair in progress. It's now its own
+  status **Waiting for repair** ("Queued for repair — not started; assign to a
+  technician", owner "Repair queue"), removed from the technician list, and
+  counted as an assessment/assignment candidate with Not mapped. Snapshot:
+  Repair in Progress 261 → **168**, Waiting for repair **93** (all other
+  workflow counts unchanged). Technician/Bibek/queue lists always come from the
+  code, so an older saved settings file can't bring the old list back.
+- Overview: six larger priority cards (devices, SKUs, reported cost), click to
+  filter. Every chart and the workflow queues now count with all filters
+  except their own, so every bar/card always shows its real quantity (before,
+  choosing Amber zeroed the others). "Unassigned highest-priority" uses a
+  candidates filter (Not mapped + Waiting for repair, no eligibility flags).
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
