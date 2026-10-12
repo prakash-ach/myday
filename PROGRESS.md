@@ -493,6 +493,62 @@ All open from a new ✨ button in the top bar (`public/cool.js`).
   to copy. Switching off → 401.
 - Tested all six end to end (incl. no-sign-in widget call and revocation).
 
+### 9 October 2026 — fix: "OpenAI's answer wasn't readable" (briefing)
+- Cause: newer models (gpt-6-luna) spend part of max_completion_tokens on
+  thinking; the briefing's 700-token budget ran out before any text, so the
+  reply was empty/cut off and failed to parse. Other small budgets (quote
+  200, snap 400) were at the same risk.
+- `ai.call` now gives every request at least 2,000 tokens; if the answer is
+  empty or finish_reason is "length" (and not valid JSON), it retries once
+  with double (max 16,000). Errors now say "empty answer" / "cut off" /
+  "not in the expected format". The briefing accepts plain text
+  (`textOk`) and has 2,500 tokens.
+- Tested with a pretend OpenAI that returns an empty cut-off answer at 2,500
+  and plain text at 5,000: briefing shown; quote unaffected.
+
+### 12 October 2026 — Repair Devices module
+New sidebar item **Repair Devices** (Team section "repair"; owner sees it, nobody
+else's access changed). Six tabs: Overview, Device Explorer, SKU Priorities,
+Repair Workflow, Costs & Margins, Files & Data Quality. Not deployed by Claude.
+- `lib/repair.js` — RFC 4180 CSV (quotes, "" escapes, multiline, BOM, CRLF);
+  roles from headers + values (repair = IMEI/SKU/Bin Location/Reason; sales =
+  every product row Monthly sale > 0; inventory = every product row first
+  Inventory > 0; both → ambiguous, user chooses) — never from filenames.
+  Validation (duplicate IDs, duplicate/blank catalog SKUs, missing roles,
+  field-count mismatches, footers). Batches stored under data/repair/batches/
+  with originals byte-for-byte, SHA-256, rows, findings; a failed batch never
+  replaces the active one; repeat imports are recognised and never add.
+  Exact-SKU joins; IDs/SKUs as text; missing ≠ 0; Stock Summary parsed per
+  warehouse with both numbers; availability = configurable warehouse/number
+  (provisional: first Inventory number); completeness setting. Workflow rules
+  exactly as specified (presold first; Bin-N001 month; Cleaning→Arika;
+  technician bins/assignees; board-level; blacklisted; testers; Bibek bins with
+  With Bibek only on a recorded handoff; unknown assignees → Assignment review;
+  invalid Bin- patterns → Bin review; bin/assignee conflicts kept and shown).
+  Demand: daily, coverage, target, shortage, Red/Amber/Green/Gray/Purple, Blue
+  for presold; eligibility evidence separate; candidates and provisional limit.
+  Finances: matched populations, weighted margin, no substitution for missing
+  Total Cost. Handoff overrides in overrides.json with who/when.
+- `lib/xlsxw.js` — dependency-free .xlsx writer (fills, frozen panes,
+  autofilter, widths, money/percent formats, inline-string identifiers).
+- `lib/repairExport.js` — 7-sheet workbook of the current filters: Overview,
+  SKU priorities, Devices, Costs by workflow/owner/SKU, Rules & sources
+  (assumptions, formulas, files + hashes, footers, review findings).
+- `public/repair.js` — the screen: shared filters with chips + Clear, clickable
+  cards/bars, sortable paginated tables, device and SKU drawers with complete
+  original records (file + line), three-file upload with role choice,
+  evidence, validation and preview, settings, batch history, Excel button.
+- Regression on the supplied snapshot: all 20 checks pass (8,661 devices/IDs,
+  1,076 repair SKUs, 1,236 sales + 665 inventory products, 1 footer each,
+  1,991 SKUs, 13,042 row monthly vs footer 2,368 shown, 20,947 Inventory
+  units, 535/261/62/226/63/81/6/2/78/7,347 workflow, 3,087 missing Total Cost,
+  279 missing Reason). 27 edge-case tests pass. Browser test with the real
+  files end to end; export verified with openpyxl and LibreOffice.
+- Open business definitions: meaning of the Inventory pair numbers; real sales
+  window; whether exports are complete; Maniraj Guragain's role (78 devices);
+  "Repair To Repair" treated as a technician bin as listed; 3 bin/assignee
+  disagreements (Nazar Mohammad Rahem, Rashed Naimee) left visible, no alias.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

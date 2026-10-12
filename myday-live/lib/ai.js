@@ -39,11 +39,20 @@ function spend(dir, userId, tokens) {
 
 /* ---------- one call ---------- */
 const lastProblem = new Map();       // userId → { at, message }, cleared on the next success
-async function call(dir, userId, messages, opts) {
-  try { const r = await callInner(dir, userId, messages, opts); lastProblem.delete(userId); return r; }
+async function call(dir, userId, messages, opts = {}) {
+  /* Newer models think before they write, and that thinking counts against
+     the allowance — so every request gets real room (at least 2,000), and an
+     answer that comes back cut off or empty is retried once with double. */
+  const room = Math.max(2000, opts.maxTokens || 0);
+  try {
+    let r;
+    try { r = await callInner(dir, userId, messages, { ...opts, maxTokens: room }); }
+    catch (e) { if (!e.retry) throw e; r = await callInner(dir, userId, messages, { ...opts, maxTokens: Math.min(room * 2, 16000) }); }
+    lastProblem.delete(userId); return r;
+  }
   catch (e) { lastProblem.set(userId, { at: Date.now(), message: String(e && e.message || e) }); throw e; }
 }
-async function callInner(dir, userId, messages, { maxTokens = 1500 } = {}) {
+async function callInner(dir, userId, messages, { maxTokens = 1500, textOk = false } = {}) {
   if (!configured()) throw new Error("OpenAI isn't set up yet");
   if (usage(dir, userId).calls >= LIMIT()) throw new Error(`Today's limit of ${LIMIT()} AI requests is used up. It resets at midnight UTC.`);
   const ctl = new AbortController();
@@ -74,12 +83,22 @@ async function callInner(dir, userId, messages, { maxTokens = 1500 } = {}) {
     throw new Error("OpenAI: " + msg);
   }
   spend(dir, userId, data.usage && data.usage.total_tokens);
-  const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || "";
+  const choice = (data.choices && data.choices[0]) || {};
+  const text = (choice.message && choice.message.content) || "";
+  if (!text.trim() || choice.finish_reason === "length") {
+    let parsed = null; try { parsed = JSON.parse(text); } catch (e) {}
+    if (!parsed) {
+      const err = new Error(!text.trim() ? "OpenAI sent back an empty answer" : "OpenAI's answer was cut off before it finished");
+      err.retry = true; throw err;
+    }
+  }
   try { return JSON.parse(text); }
   catch (e) {
     const m = text.match(/\{[\s\S]*\}/);
     if (m) { try { return JSON.parse(m[0]); } catch (e2) {} }
-    throw new Error("OpenAI's answer wasn't readable");
+    // Some jobs (the briefing) are just words: take the text as it is.
+    if (textOk && text.trim()) return { text: text.trim() };
+    throw new Error("OpenAI's answer wasn't in the expected format");
   }
 }
 
@@ -328,8 +347,8 @@ async function briefing(dir, userId, { context, extra, name }) {
   const sys = `Write a spoken morning briefing for ${clip(name, 30) || "the user"}, who runs a phone buying and resale business. About 45–60 seconds read aloud (110–150 words).
 Use only the data given. Order: a warm one-line hello with the day; anything with a deadline today (bids first, with times); what's overdue; emails or invoices waiting; one notable price or trade-in change if any; a one-line encouraging close.
 Write for the ear: short sentences, no lists, no symbols, say money as words-friendly numbers ("two hundred fifty dollars" is fine as "$250"). If the day is light, say so briefly. Reply with JSON: {"script":"..."}`;
-  const out = await call(dir, userId, [{ role: "system", content: sys }, { role: "user", content: JSON.stringify({ context, extra }).slice(0, 30000) }], { maxTokens: 700 });
-  return clip(out.script, 2000);
+  const out = await call(dir, userId, [{ role: "system", content: sys }, { role: "user", content: JSON.stringify({ context, extra }).slice(0, 30000) }], { maxTokens: 2500, textOk: true });
+  return clip(out.script || out.text, 2000);
 }
 
 /* ---------- 2. the assistant you talk to ---------- */

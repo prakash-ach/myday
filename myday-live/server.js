@@ -27,6 +27,8 @@ const mergeLib = require("./lib/merge");
 const inboxLib = require("./lib/inbox");
 const memory = require("./lib/memory");
 const tradein = require("./lib/tradein");
+const repair = require("./lib/repair");
+const repairExport = require("./lib/repairExport");
 /* Recent saved versions, so a save can be merged against the version that
    device started from. Kept in memory; after a restart the merge just keeps
    everything from both sides. */
@@ -191,7 +193,7 @@ async function serveStatic(req, res, urlPath) {
  */
 const ALL_SECTIONS = ["dashboard", "today", "tasks", "calendar", "projects",
   "auctions", "automation", "development", "notes", "goals", "habits", "settings",
-  "captured", "news", "tradein", "ai-chat", "ai-mail"];
+  "captured", "news", "tradein", "repair", "ai-chat", "ai-mail"];
 /* The two AI switches ride along with the sections, so the owner turns them
    on per person in Settings → Team. Nobody but the owner has them until then:
    "ai-chat" is the assistant, "ai-mail" lets AI read their Gmail for tasks. */
@@ -904,6 +906,80 @@ const server = http.createServer(async (req, res) => {
     const inv = watcher.invoices(DATA_DIR, u.id, r.capturedSince, watcherSettings(u).ownDomains, watcherSettings(u).ownNames).filter((x) => x.status === "review").length;
     return json(res, 200, { day, next: open[0] ? { title: open[0].title, time: open[0].time || "", overdue: open[0].date < day } : null, today: open.length,
       bids: bids.map((t) => ({ title: t.title.replace(/^Review bid file:\s*/i, ""), when: t.deadline + (t.deadlineTime ? " " + t.deadlineTime : "") })), invoices: inv });
+  }
+
+  /* ---- Repair Devices ---- */
+  if (p.startsWith("/api/repair/")) {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (sectionsFor(me.username).indexOf("repair") < 0) return json(res, 403, { error: "The owner hasn't switched Repair Devices on for you." });
+    const who = me.displayName || me.username;
+    const readBody = async () => { try { return JSON.parse(await body(req)); } catch (e) { return null; } };
+    const filesFrom = (b) => (Array.isArray(b && b.files) ? b.files : []).slice(0, 3).map((f) => {
+      const buf = Buffer.from(String(f.b64 || ""), "base64");
+      const x = repair.inspect(String(f.name || "file.csv").slice(0, 200), buf);
+      return { ...x, buf, role: f.role || x.info.role };
+    });
+    try {
+      if (p === "/api/repair/state" && req.method === "GET") {
+        return json(res, 200, { batches: repair.batches(DATA_DIR), active: repair.activeId(DATA_DIR), settings: repair.settings(DATA_DIR) });
+      }
+      if (p === "/api/repair/data" && req.method === "GET") {
+        const v = repair.clientView(repair.model(DATA_DIR));
+        if (!v) return json(res, 200, { empty: true });
+        const raw = Buffer.from(JSON.stringify(v));
+        if (/\bgzip\b/.test(req.headers["accept-encoding"] || "")) {
+          res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "cache-control": "no-store" });
+          return res.end(require("node:zlib").gzipSync(raw));
+        }
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }); return res.end(raw);
+      }
+      if (p === "/api/repair/device" && req.method === "GET") {
+        const m = repair.model(DATA_DIR); const d = m && repair.deviceDetail(m, Number(url.searchParams.get("i")));
+        return d ? json(res, 200, d) : json(res, 404, { error: "not found" });
+      }
+      if (p === "/api/repair/sku" && req.method === "GET") {
+        const m = repair.model(DATA_DIR); if (!m) return json(res, 404, { error: "no batch" });
+        const k = url.searchParams.get("sku") || "", pr = m.raw.sales.get(k) || {}, cat = [];
+        for (const role of ["sales", "inventory"]) {
+          if (pr[role]) cat.push({ role, file: pr[role].file, line: pr[role].line, record: pr[role].rec, data: pr[role].data });
+          for (const x of pr["dup_" + role] || []) cat.push({ role, file: x.file, line: x.line, record: x.rec, data: x.data, duplicate: true });
+        }
+        return json(res, 200, { sku: m.skus.find((x) => x.sku === k) || null, catalog: cat });
+      }
+      if (p === "/api/repair/inspect" && req.method === "POST") {
+        const files = filesFrom(await readBody());
+        return json(res, 200, { files: files.map((f) => f.info), validation: repair.validate(files) });
+      }
+      if (p === "/api/repair/apply" && req.method === "POST") {
+        const files = filesFrom(await readBody());
+        const v = repair.validate(files);
+        // A failed batch never replaces the active one.
+        if (!v.ok) return json(res, 400, { error: "This batch didn't pass validation — the active batch is unchanged.", validation: v });
+        const r = repair.saveBatch(DATA_DIR, files, who, v);
+        return json(res, 200, { ok: true, ...r, validation: v });
+      }
+      if (p === "/api/repair/activate" && req.method === "POST") {
+        const b = await readBody(); return json(res, repair.activate(DATA_DIR, String((b || {}).id || ""), who) ? 200 : 404, {});
+      }
+      if (p === "/api/repair/settings" && req.method === "POST") {
+        return json(res, 200, { settings: repair.saveSettings(DATA_DIR, (await readBody()) || {}) });
+      }
+      if (p === "/api/repair/override" && req.method === "POST") {
+        const b = (await readBody()) || {};
+        if (!["bibek-handoff", "clear"].includes(b.kind) || !b.id) return json(res, 400, { error: "bad request" });
+        return json(res, 200, { entry: repair.setOverride(DATA_DIR, b.id, b.kind, b.note, who) });
+      }
+      if (p === "/api/repair/export" && req.method === "POST") {
+        const m = repair.model(DATA_DIR); if (!m) return json(res, 400, { error: "No active batch" });
+        const b = (await readBody()) || {};
+        const buf = repairExport.build(m, { devices: b.devices, skus: b.skus, filters: b.filters || {}, user: who });
+        const name = `repair-devices-${m.batch.id}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.xlsx`;
+        res.writeHead(200, { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="${name}"`, "cache-control": "no-store" });
+        return res.end(buf);
+      }
+    } catch (e) { return json(res, 500, { error: "Repair Devices: " + String(e && e.message || e) }); }
+    return json(res, 404, { error: "not found" });
   }
 
   /* ---- Apple Trade-In values ---- */
