@@ -68,28 +68,104 @@
       work(it).finally(() => { S.Q.running--; it.img = it.status === "retake" ? it.img : null; draw(); refreshSoon(); pump(); });
     }
   }
+  /* ---------- reliable requests: retry until it gets through ---------- */
+  const wake = new Set();
+  const nap = (ms) => new Promise((res) => { const t = setTimeout(done, ms); function done() { clearTimeout(t); wake.delete(done); res(); } wake.add(done); });
+  const wakeAll = () => [...wake].forEach((f) => f());
+  window.addEventListener("online", wakeAll);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) wakeAll(); });
+  /* One request, tried until it works: network drops, the phone pausing the page
+     (camera open), server restarts or busy web server (502/503/504) just wait and
+     try again. Real answers (2xx/4xx) come back. */
+  async function steady(url, body, it) {
+    for (let n = 0; ; n++) {
+      if (it && it.cancel) throw new Error("cancelled");
+      try {
+        const r = await fetch(url, body ? { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : { credentials: "same-origin" });
+        if (r.status === 401) { location.reload(); throw new Error("signed out"); }
+        if (r.status < 500 && r.status !== 429 && r.status !== 408) { const t = await r.text(); let j; try { j = JSON.parse(t); } catch (e) { j = { error: `HTTP ${r.status}` }; } return { ok: r.ok, status: r.status, j }; }
+      } catch (e) { if (e.message === "signed out") throw e; }
+      if (it) { it.waiting = true; it.msg = navigator.onLine === false ? "offline — will send when the connection is back" : "waiting for the connection — retrying"; draw(); }
+      await nap(Math.min(30000, 1500 * 2 ** Math.min(n, 5)));
+      if (it) { it.waiting = false; }
+    }
+  }
   async function work(it) {
-    const { ok, j } = await post("/api/scanbox/read", { image: jpeg(it.img, 2400), mime: "image/jpeg", auto: true });
-    if (!ok) { it.status = "error"; it.msg = j.error; return; }
+    // 1) upload (quick) → a ticket. Retried uploads of the same photo get the same ticket.
+    const image = it.payload || (it.payload = jpeg(it.img, 2400));
+    let up = await steady("/api/scanbox/upload", { uploadId: it.key, image, mime: "image/jpeg", auto: true }, it);
+    if (!up.ok) { it.status = "error"; it.msg = up.j.error || "Upload refused"; return; }
+    it.msg = up.j.ahead ? `uploaded — ${up.j.ahead} ahead in the queue` : "uploaded — reading…"; draw();
+    // 2) check the ticket until the server has read it (works across pauses and restarts).
+    let j;
+    for (;;) {
+      await nap(2000);
+      const r = await steady("/api/scanbox/job?id=" + encodeURIComponent(it.key), null, it);
+      if (r.status === 404 && r.j.unknown) { up = await steady("/api/scanbox/upload", { uploadId: it.key, image, mime: "image/jpeg", auto: true }, it); continue; }
+      if (!r.ok) { it.status = "error"; it.msg = r.j.error || "Couldn't read this photo"; return; }
+      if (r.j.status === "error") { it.status = "error"; it.msg = r.j.error || "Couldn't read this photo"; return; }
+      if (r.j.status === "done") { j = r.j.result; break; }
+      it.msg = r.j.status === "queued" && r.j.ahead ? `in the queue — ${r.j.ahead} ahead` : "reading…"; draw();
+    }
+    it.payload = null;
     if (j.retake) { it.status = "retake"; it.msg = j.retake + " (photo not kept)"; return; }
     it.status = "done"; it.saved = j.saved; it.dups = j.duplicates; S.Q.saved += j.saved; S.Q.dups += j.duplicates;
     it.msg = `${j.saved} saved${j.duplicates ? ` · ${j.duplicates} duplicate${j.duplicates === 1 ? "" : "s"} skipped` : ""}`;
-    // Close-up re-read for boxes whose IMEI is missing or fails its check digit.
+    // 3) close-up re-reads, each retried the same way.
     const W = it.img.naturalWidth, H = it.img.naturalHeight;
-    // Close-up when an IMEI is missing/fails its check, the serial is missing, or a turned box wasn't read with confidence.
-    const needs = (j.boxes || []).filter((b) => b.rowId && b.box && (!luhn(digits(b.imei1)) || (b.imei2 && !luhn(digits(b.imei2))) || !b.serial || (b.rotation && (b.confidence || 0) < 0.8)));
+    const needs = (j.boxes || []).filter((b) => b.box && (b.pending || (b.rowId && (!luhn(digits(b.imei1)) || (b.imei2 && !luhn(digits(b.imei2))) || !b.serial || (b.rotation && (b.confidence || 0) < 0.8)))));
+    const retakeBoxes = [];
     if (needs.length) { it.msg += ` · re-reading ${needs.length} up close…`; draw(); }
     let fixed = 0;
     await Promise.all(needs.map(async (b) => {
       const [x, y, w, h] = b.box, pad = 0.04;
       const sx = Math.max(0, (x - pad) * W), sy = Math.max(0, (y - pad) * H), sw = Math.min(W - sx, (w + 2 * pad) * W), sh = Math.min(H - sy, (h + 2 * pad) * H);
       if (sw < 50 || sh < 50) return;
-      const r = await post("/api/scanbox/reread", { id: b.rowId, image: jpeg(it.img, 1800, [sx, sy, sw, sh], b.rotation) });
+      const image = jpeg(it.img, 1800, [sx, sy, sw, sh], b.rotation);
+      if (b.pending) {
+        const { pending, rowId, box, ...data } = b;
+        const r = await steady("/api/scanbox/reread", { photoId: j.photoId, box: data, image }, null);
+        if (r.ok && r.j.saved) { it.saved++; S.Q.saved++; fixed++; }
+        else if (r.ok && r.j.duplicate) { it.dups++; S.Q.dups++; }
+        else retakeBoxes.push(`${[b.brand, b.model].filter(Boolean).join(" ") || "a box"}${b.position ? " (" + b.position + ")" : ""}`);
+        return;
+      }
+      const r = await steady("/api/scanbox/reread", { id: b.rowId, image }, null);
       if (r.ok && r.j.duplicate) { it.saved--; S.Q.saved--; it.dups++; S.Q.dups++; }
       else if (r.ok && r.j.changed) fixed++;
     }));
     if (needs.length) { it.msg = `${it.saved} saved${it.dups ? ` · ${it.dups} duplicate${it.dups === 1 ? "" : "s"} skipped` : ""} · ${fixed} of ${needs.length} fixed up close`; S.Q.fixed += fixed; }
+    // Boxes still without an IMEI or serial: ask for a close-up photo of just that box.
+    if (retakeBoxes.length) S.Q.items.unshift({ key: it.key + "-rt", status: "retake", thumb: it.thumb, msg: `Take a close-up of ${retakeBoxes.join(", ")} — its IMEI/serial couldn't be read (not saved)` });
   }
+  /* The buttons live on <body>, so "fixed" means the screen, not the page content. */
+  let fabHost = null;
+  function drawFab() {
+    if (!S.host) { if (fabHost) { fabHost.remove(); fabHost = null; } return; }
+    if (!fabHost) {
+      fabHost = document.createElement("div"); document.body.appendChild(fabHost);
+      fabHost.addEventListener("change", (e) => onChange(e));
+    }
+    const c = ctx();
+    fabHost.className = "sb " + (c && c.isDark === false ? "light" : "dark");
+    fabHost.style.cssText = `--a:${(c && c.accent) || "#2FBF87"};padding:0;margin:0`;
+    fabHost.innerHTML = actionBar();
+  }
+  /* Big, always-there buttons: next photo, and retake when one is needed. */
+  function actionBar() {
+    if (!S.rapid) return "";
+    const rt = S.Q.items.filter((x) => x.status === "retake" || x.status === "error");
+    const last = S.Q.items.find((x) => ["done", "retake", "error"].includes(x.status));
+    const busy = S.Q.items.filter((x) => ["checking", "waiting", "reading"].includes(x.status)).length;
+    const line = last ? (last.status === "done" ? `✓ ${esc(last.msg.split(" · ").slice(0, 2).join(" · "))}` : `⚠ ${esc(last.msg)}`) : "Point at the box labels and tap 📷";
+    return `<div class="sb-fab">
+      <div class="sb-fab-msg ${last && last.status !== "done" ? "bad" : ""}">${line}${busy ? ` <span>· ${busy} reading in the background</span>` : ""}</div>
+      <div class="sb-fab-row">
+        ${rt.length ? `<label class="sb-fab-btn retake">↻ Retake${rt.length > 1 ? ` (${rt.length})` : ""}<small>${esc((rt[0].msg || "").replace(/\s*\((not uploaded|photo not kept|not saved)\)/, "").slice(0, 46))}</small><input type="file" accept="image/*" capture="environment" hidden data-retake="${rt[0].key}"></label>` : ""}
+        <label class="sb-fab-btn next">📷 Next photo<input type="file" accept="image/*" capture="environment" hidden data-scan></label>
+      </div></div>`;
+  }
+
   let refreshT = null;
   const refreshSoon = () => { clearTimeout(refreshT); refreshT = setTimeout(load, 800); };
   function queueHtml() {
@@ -103,7 +179,7 @@
       <button class="sb-link" data-qclear>Clear finished</button></div>
       ${retakes.length ? `<div class="sb-retakes">${retakes.slice(0, 12).map((x) => `<div class="sb-rt">${x.thumb ? `<img src="${x.thumb}" alt="">` : ""}<div><b>Take it again</b><small>${esc(x.msg)}</small>
         ${x.local && x.status === "retake" ? `<button class="sb-link" data-force="${x.key}">Use this one anyway</button>` : ""}<button class="sb-link" data-dismiss="${x.key}">Dismiss</button></div></div>`).join("")}</div>` : ""}
-      <div class="sb-strip">${Q.items.filter((x) => x.status !== "retake" && x.status !== "error").slice(0, 24).map((x) => `<span class="sb-chip ${x.status}" title="${esc(x.msg)}">${x.status === "done" ? "✓" : x.status === "reading" ? "⟳" : "…"} ${esc(x.status === "done" ? x.msg.split(" · ")[0] : x.status)}</span>`).join("")}</div></div>`;
+      <div class="sb-strip">${Q.items.filter((x) => x.status !== "retake" && x.status !== "error").slice(0, 24).map((x) => `<span class="sb-chip ${x.waiting ? "wait" : x.status}" title="${esc(x.msg)}">${x.status === "done" ? "✓" : x.waiting ? "⏳" : x.status === "reading" ? "⟳" : "…"} ${esc(x.status === "done" ? x.msg.split(" · ")[0] : x.waiting ? "waiting for connection" : x.msg || x.status)}</span>`).join("")}</div></div>`;
   }
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
   const digits = (s) => String(s || "").replace(/\D/g, "");
@@ -252,6 +328,7 @@
       ${S.busy ? `<p class="sb-note">${esc(S.busy)}</p>` : ""}${S.err ? `<p class="sb-warn">${esc(S.err)}</p>` : ""}
       <label class="sb-tog"><input type="checkbox" data-rapid ${S.rapid ? "checked" : ""}> ⚡ Rapid mode — shoot without waiting; boxes save straight to the table (turn off to review each photo first)</label>
       ${queueHtml()}${reviewHtml()}${tableHtml()}</div>`;
+    drawFab();
   }
   function onClick(e) {
     const t = e.target, R = S.review;
@@ -289,6 +366,11 @@
     const t = e.target, R = S.review;
     if (t.hasAttribute("data-scan")) { const files = [...t.files]; t.value = ""; if (files.length) (S.rapid ? enqueue(files) : scan(files)); return; }
     if (t.hasAttribute("data-rapid")) { S.rapid = t.checked; return draw(); }
+    if (t.dataset.retake) {           // the retake replaces that item
+      const files = [...t.files]; t.value = ""; if (!files.length) return;
+      S.Q.items = S.Q.items.filter((x) => x.key !== t.dataset.retake);
+      return enqueue(files);
+    }
     if (t.hasAttribute("data-showremoved")) { S.showRemoved = t.checked; S.pick.clear(); return load(); }
     if (t.dataset.inc != null) { R.boxes[+t.dataset.inc].include = t.checked; return draw(); }
     if (t.dataset.dup != null) { const b = R.boxes[+t.dataset.dup]; b.allowDuplicate = t.checked; if (t.checked) b.include = true; return draw(); }
@@ -319,12 +401,27 @@
   .sb-cam{display:inline-flex;align-items:center}
   .sb-table tr.removed td{opacity:.55}.sb-table tr.removed td:first-child{opacity:1}.sb-rm{color:#F2545B !important}
   .sb-sec.danger{color:#fff;background:#F2545B;border-color:#F2545B;font-weight:700}
+  .sb-fab{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 22px);z-index:45;width:min(560px,calc(100% - 24px));
+    display:flex;flex-direction:column;gap:7px;pointer-events:none}
+  @media (max-width:860px){.sb-fab{bottom:calc(env(safe-area-inset-bottom,0px) + 84px)}}
+  .sb-fab-msg{align-self:center;max-width:100%;pointer-events:auto;font-size:12.5px;font-weight:600;padding:6px 12px;border-radius:999px;background:var(--bg);border:1px solid var(--line);
+    color:#22C55E;box-shadow:0 8px 24px -10px rgba(0,0,0,.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sb-fab-msg.bad{color:#F2545B}.sb-fab-msg span{color:var(--muted);font-weight:400}
+  .sb-fab-row{display:flex;gap:8px;pointer-events:auto}
+  .sb-fab-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:58px;border-radius:18px;cursor:pointer;font-weight:800;font-size:17px;
+    color:#fff;box-shadow:0 14px 34px -12px rgba(0,0,0,.55);user-select:none;-webkit-tap-highlight-color:transparent}
+  .sb-fab-btn.next{background:linear-gradient(135deg,var(--a),color-mix(in srgb,var(--a) 70%,#000))}
+  .sb-fab-btn.retake{background:linear-gradient(135deg,#F2545B,#C7343B)}
+  .sb-fab-btn small{font-size:11px;font-weight:600;opacity:.9;max-width:92%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sb-fab-btn:active{transform:scale(.97)}
+  .sb{padding-bottom:150px}.sb-fab ~ *{}
+  body.sb-on .mda-launch{display:none !important}
   .sb-tog{display:flex;gap:7px;align-items:center;font-size:12.5px;color:var(--muted);margin:0 0 10px}
   .sb-stat{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}.sb-stat b{color:var(--ink)}.sb-stat.ok b{color:#22C55E}.sb-stat.bad{border-color:#F2545B;color:#F2545B}
   .sb-retakes{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;margin:8px 0}
   .sb-rt{display:flex;gap:8px;align-items:center;border:1px solid rgba(242,84,91,.5);border-radius:12px;padding:7px;background:rgba(242,84,91,.06)}
   .sb-rt img{width:54px;height:54px;object-fit:cover;border-radius:8px}.sb-rt small{display:block;color:var(--muted);font-size:11.5px}.sb-rt .sb-link{margin-right:8px}
-  .sb-strip{display:flex;gap:5px;flex-wrap:wrap}.sb-chip{font-size:11.5px;border-radius:999px;padding:2px 9px;background:var(--chip);color:var(--muted)}.sb-chip.done{color:#22C55E}.sb-chip.reading{color:var(--a)}
+  .sb-strip{display:flex;gap:5px;flex-wrap:wrap}.sb-chip{font-size:11.5px;border-radius:999px;padding:2px 9px;background:var(--chip);color:var(--muted)}.sb-chip.done{color:#22C55E}.sb-chip.wait{color:#C9A227}.sb-chip.reading{color:var(--a)}
   .sb-link{border:0;background:none;color:var(--a);cursor:pointer;padding:0;text-decoration:underline;font-size:12.5px}
   .sb-panel{border:1px solid var(--line);background:var(--card);border-radius:16px;padding:14px;margin-bottom:14px;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px)}
   .sb-review{border-color:var(--a)}.sb-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}.sb-row h3{margin:0;font-size:15px}.sb-row h3 small{color:var(--faint);font-weight:400}
@@ -346,9 +443,10 @@
   `;
   function mount(host) {
     if (!document.getElementById("sb-css")) { const st = document.createElement("style"); st.id = "sb-css"; st.textContent = CSS; document.head.appendChild(st); }
+    document.body.classList.add("sb-on");          // make room for the big buttons
     S.host = host; host.addEventListener("click", onClick); host.addEventListener("change", onChange); host.addEventListener("input", onInput);
     draw(); load();
   }
-  function unmount() { S.host = null; }
+  function unmount() { S.host = null; document.body.classList.remove("sb-on"); drawFab(); }
   window.MYDAYScanBox = { mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
 })();

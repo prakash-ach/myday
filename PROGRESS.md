@@ -677,6 +677,51 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   purge refused (403) server-side.
 - Tested with two users end to end.
 
+### 16 October 2026 — phones: version number + Reload in the side menu
+- The ☰ side menu shows "Version NN" (from extra/RELEASE, injected by build.sh
+  as window.MYDAY_BUILD) and a ↻ Reload button — home-screen apps on iPhone
+  have no refresh button. Pages are served with no-cache + ETag and there's no
+  service worker, so reopening the app loads a newly deployed version.
+- Prakash's phone screenshots showed the old bottom bar: version 44 wasn't
+  deployed yet (or the app wasn't reopened).
+- Bump extra/RELEASE with each package.
+
+### 16 October 2026 — Scan Boxes: never "server not reached"; built for 3 people shooting at once
+- Cause: on iPhone the page is paused while the camera is open; rapid mode's
+  long upload-and-wait requests (10–20 s of AI each) were cut → "Couldn't
+  reach the server". Also nginx's 60 s proxy timeout.
+- New flow: `/api/scanbox/upload` takes the photo quickly and returns a ticket
+  (photo's own uploadId; a retried upload gets the same ticket, so nothing is
+  processed twice); the server reads photos in a shared queue
+  (SCAN_CONCURRENCY, default 6 across all users); the phone polls
+  `/api/scanbox/job` every 2 s. Every request retries automatically (network
+  drops, 5xx, 408/429) with backoff up to 30 s, waking on reconnect / app
+  return; a ticket lost to a server restart → the photo is uploaded again.
+  The phone shows "waiting for the connection" — never an error that loses a
+  photo. Close-up re-reads retry the same way.
+- Boxes with neither a valid IMEI nor a serial are never saved as rows (they
+  couldn't be duplicate-checked): a close-up of that box decides — numbers
+  found → saved (duplicate-checked), else "take a close-up of <box>".
+  Close-up reads are told the expected box (brand/model/colour) and an answer
+  for a different model is rejected.
+- setup.sh: nginx proxy_read_timeout/proxy_send_timeout 180 s for MYDAY
+  (added to existing sites with backup + rollback).
+- Stress test through an nginx stand-in: 3 users × 4 photos at once, 40% of
+  Scan Boxes connections dropped, MYDAY restarted mid-run → all 12 photos done
+  in 21 s, no errors shown, exactly 6 rows (one per box), 0 duplicates, all
+  IMEIs valid.
+
+### 16 October 2026 — Scan Boxes: big Next photo / Retake buttons
+- Rapid mode shows fixed buttons above the phone's bottom bar (rendered on
+  <body> so "fixed" is the screen, not the page): **📷 Next photo** always,
+  and a red **↻ Retake** (with the reason) when a photo or a box needs
+  retaking; the retake photo replaces that item. A one-line result above them
+  ("✓ 6 saved · …" / "⚠ too blurry…", "· N reading in the background").
+  Max's launcher is hidden on Scan Boxes to make room. iPhone only opens the
+  camera from a tap, so it's one tap per photo.
+- Tested at iPhone size: blurry → Retake shown; retake → 6 saved, Retake
+  gone; Next photo while another is still reading; duplicates line.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

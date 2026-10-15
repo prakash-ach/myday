@@ -172,6 +172,7 @@ function photoFor(dir, me, owner, id) {
 function applyReread(dir, me, owner, id, got) {
   const d = read(dir), r = d.rows.find((x) => x.id === id);
   if (!r || r.hidden || !canSee(r, me, owner)) return { error: "not found" };
+  if (got.model && r.model && modelOnly(r.brand, got.model).toLowerCase() !== String(r.model).toLowerCase()) return { row: r, changed: 0, mismatch: true };   // a different box
   const changed = [];
   for (const f of ["imei1", "imei2"]) {
     const v = digits(got[f]);
@@ -200,4 +201,16 @@ function applyReread(dir, me, owner, id, got) {
 }
 function dropPhoto(dir, id) { try { fs.unlinkSync(photo(dir, id)); fs.unlinkSync(photo(dir, id) + ".by"); } catch (e) {} }
 
-module.exports = { removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };
+/* A box the stack photo couldn't identify (no IMEI, no serial): never saved as
+   an empty row. The close-up read decides: numbers found → saved (duplicate-
+   checked); otherwise "retake this box". */
+function saveFromCloseup(dir, user, photoId, box, got) {
+  if (got.model && box.model && modelOnly(box.brand, got.model).toLowerCase() !== modelOnly(box.brand, box.model).toLowerCase()) return { retake: true, reason: "close-up showed a different box" };
+  const row = { ...box, imei1: luhn(digits(got.imei1)) ? got.imei1 : "", imei2: luhn(digits(got.imei2)) ? got.imei2 : "", serial: got.serial || "" };
+  for (const f of ["colour", "ram", "storage"]) if (!row[f] && got[f]) row[f] = got[f];
+  if (!row.imei1 && !row.serial) return { retake: true, reason: "IMEI and serial still unreadable" };
+  const out = save(dir, { photoId, rows: [row] }, user);
+  return out.saved.length ? { saved: out.saved[0].id } : { duplicate: true };
+}
+
+module.exports = { saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };

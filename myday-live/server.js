@@ -909,6 +909,32 @@ const server = http.createServer(async (req, res) => {
       bids: bids.map((t) => ({ title: t.title.replace(/^Review bid file:\s*/i, ""), when: t.deadline + (t.deadlineTime ? " " + t.deadlineTime : "") })), invoices: inv });
   }
 
+  /* ---- Scan Boxes: upload → ticket; the server reads it in its own queue ---- */
+  if (p === "/api/scanbox/upload" && req.method === "POST") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (sectionsFor(me.username).indexOf("scanbox") < 0) return json(res, 403, { error: "The owner hasn't switched Scan Boxes on for you." });
+    if (!ai.configured()) return json(res, 400, { error: "Scanning needs the OpenAI key set up." });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const uid = String(b.uploadId || "").replace(/[^a-z0-9-]/gi, "").slice(0, 60);
+    if (!uid) return json(res, 400, { error: "missing uploadId" });
+    const key = me.username + ":" + uid;
+    const known = scanJobs.get(key);
+    if (known) return json(res, 200, { jobId: uid, status: known.status });           // a retried upload: same ticket
+    const img = String(b.image || "").replace(/^data:[^,]+,/, "");
+    if (img.length < 100 || img.length > 8e6) return json(res, 400, { error: "No usable photo" });
+    scanJobs.set(key, { status: "queued", at: Date.now(), me, img, mime: b.mime });
+    pumpScans();
+    return json(res, 200, { jobId: uid, status: "queued", ahead: scanQueueLength() });
+  }
+  if (p === "/api/scanbox/job" && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const j = scanJobs.get(me.username + ":" + String(url.searchParams.get("id") || ""));
+    if (!j) return json(res, 404, { error: "unknown ticket", unknown: true });
+    return json(res, 200, { status: j.status, result: j.result, error: j.error, ahead: j.status === "queued" ? scanQueueLength() : 0 });
+  }
+
   /* ---- Scan Boxes: one shared table; people see theirs, the owner sees all ---- */
   if (p.startsWith("/api/scanbox/")) {
     const me = userFromSession(sessionFor(req));
@@ -939,7 +965,12 @@ const server = http.createServer(async (req, res) => {
       if (p === "/api/scanbox/reread" && req.method === "POST") {
         const b = await rb(); const img = String((b && b.image) || "").replace(/^data:[^,]+,/, "");
         if (img.length < 100 || img.length > 6e6) return json(res, 400, { error: "No usable image" });
-        const got = await ai.readOneBox(DATA_DIR, "scan-" + me.id, img);
+        if (b.box) {                          // a box not saved yet: the close-up decides
+          const got = await ai.readOneBox(DATA_DIR, "scan-" + me.id, img, b.box);
+          return json(res, 200, scanbox.saveFromCloseup(DATA_DIR, who, String(b.photoId || ""), b.box, got));
+        }
+        const row = scanbox.list(DATA_DIR, me, owner).find((x) => x.id === String(b.id || ""));
+        const got = await ai.readOneBox(DATA_DIR, "scan-" + me.id, img, row);
         const r = scanbox.applyReread(DATA_DIR, me, owner, String(b.id || ""), got);
         return json(res, r.error ? 400 : 200, r);
       }
@@ -1418,6 +1449,42 @@ setInterval(() => {
 }, 36e5).unref();
 
 /* Keep reading in the background, whether anyone is looking or not. */
+/* Scan Boxes job queue: photos are uploaded quickly and read here, a few at a
+   time across all users, so a phone that pauses (camera open, signal drop)
+   never loses a photo — it just asks for the result again. */
+const scanJobs = new Map();                       // "user:uploadId" → { status, me, img, result, error }
+let scanRunning = 0;
+const SCAN_CONCURRENCY = Math.max(1, Number(process.env.SCAN_CONCURRENCY || 6));
+const scanQueueLength = () => [...scanJobs.values()].filter((j) => j.status === "queued").length;
+function pumpScans() {
+  while (scanRunning < SCAN_CONCURRENCY) {
+    const next = [...scanJobs.values()].filter((j) => j.status === "queued").sort((a, b) => a.at - b.at)[0];
+    if (!next) break;
+    next.status = "reading"; scanRunning++;
+    runScan(next).catch((e) => { next.status = "error"; next.error = String(e && e.message || e); })
+      .finally(() => { next.img = null; scanRunning--; pumpScans(); });
+  }
+  // forget finished tickets after 2 hours
+  for (const [k, j] of scanJobs) if (j.status !== "queued" && j.status !== "reading" && Date.now() - j.at > 2 * 3600e3) scanJobs.delete(k);
+}
+async function runScan(job) {
+  const me = job.me, who = { username: me.username, name: me.displayName || me.username };
+  const photoId = scanbox.savePhoto(DATA_DIR, job.img, me.username);
+  const r = await ai.scanBoxes(DATA_DIR, "scan-" + me.id, job.img, job.mime);
+  const usable = r.boxes.filter((x) => x.model || x.imei1 || x.serial);
+  if (!usable.length) { scanbox.dropPhoto(DATA_DIR, photoId); job.result = { retake: r.retake || "Couldn't read any box — take it again" }; job.status = "done"; return; }
+  // Boxes with neither a valid IMEI nor a serial can't be told apart from boxes already scanned:
+  // they wait for a close-up instead of becoming empty rows.
+  const hasId = (x) => scanbox.luhn(scanbox.digits(x.imei1)) || scanbox.luhn(scanbox.digits(x.imei2)) || (x.serial && x.serial.length >= 6);
+  const out = scanbox.save(DATA_DIR, { photoId, rows: usable.filter(hasId) }, who);
+  const pending = usable.filter((x) => !hasId(x));
+  if (!out.saved.length && !pending.length) scanbox.dropPhoto(DATA_DIR, photoId);
+  const savedBy = new Map(out.saved.map((x) => [x.imei1 + "|" + x.serial + "|" + x.model + "|" + x.colour, x.id]));
+  job.result = { photoId, saved: out.saved.length, duplicates: out.skipped.filter((x) => /already scanned/.test(x.reason)).length,
+    boxes: usable.map((x) => { const n = scanbox.normalise(x); return { ...x, pending: !hasId(x) || undefined, rowId: hasId(x) ? savedBy.get(n.imei1 + "|" + n.serial + "|" + n.model + "|" + n.colour) || null : null }; }) };
+  job.status = "done";
+}
+
 /* Fetch every email with an attachment since the Captured Invoices start
    date, once at a time per person, in the background. Reads only. It
    doesn't make automatic tasks for these older emails — that's for mail

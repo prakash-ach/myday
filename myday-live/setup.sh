@@ -193,6 +193,8 @@ server {
     listen [::]:80;
     server_name $DOMAIN;
     client_max_body_size 60m;   # uploads (repair CSVs, photos) are bigger than nginx's 1 MB default
+    proxy_read_timeout 180s;    # AI requests can take longer than nginx's 60 s default
+    proxy_send_timeout 180s;
 
     location / {
         proxy_pass http://127.0.0.1:$PORT;
@@ -208,6 +210,12 @@ NGINX
     ok "nginx site added, your other sites untouched"
   fi
   # Existing sites predate the upload limit: add it once, keep a backup, undo if nginx objects.
+  if ! grep -q "proxy_read_timeout" "$SITE"; then
+    cp "$SITE" "$SITE.backup.$(date +%Y%m%d%H%M%S)"
+    sed -i '/server_name/a\    proxy_read_timeout 180s;\n    proxy_send_timeout 180s;' "$SITE"
+    if nginx -t >/dev/null 2>&1; then ok "nginx timeout raised to 3 minutes for MYDAY"
+    else cp "$(ls -t "$SITE".backup.* | head -1)" "$SITE"; echo "    Couldn't raise the nginx timeout automatically — the site is unchanged."; fi
+  fi
   if ! grep -q "client_max_body_size" "$SITE"; then
     cp "$SITE" "$SITE.backup.$(date +%Y%m%d%H%M%S)"
     sed -i '/server_name/a\    client_max_body_size 60m;' "$SITE"
