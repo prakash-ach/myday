@@ -28,6 +28,7 @@ const inboxLib = require("./lib/inbox");
 const memory = require("./lib/memory");
 const tradein = require("./lib/tradein");
 const repair = require("./lib/repair");
+const scanbox = require("./lib/scanbox");
 const repairExport = require("./lib/repairExport");
 /* Recent saved versions, so a save can be merged against the version that
    device started from. Kept in memory; after a restart the merge just keeps
@@ -193,7 +194,7 @@ async function serveStatic(req, res, urlPath) {
  */
 const ALL_SECTIONS = ["dashboard", "today", "tasks", "calendar", "projects",
   "auctions", "automation", "development", "notes", "goals", "habits", "settings",
-  "captured", "news", "tradein", "repair", "ai-chat", "ai-mail"];
+  "captured", "news", "tradein", "repair", "scanbox", "ai-chat", "ai-mail"];
 /* The two AI switches ride along with the sections, so the owner turns them
    on per person in Settings → Team. Nobody but the owner has them until then:
    "ai-chat" is the assistant, "ai-mail" lets AI read their Gmail for tasks. */
@@ -906,6 +907,76 @@ const server = http.createServer(async (req, res) => {
     const inv = watcher.invoices(DATA_DIR, u.id, r.capturedSince, watcherSettings(u).ownDomains, watcherSettings(u).ownNames).filter((x) => x.status === "review").length;
     return json(res, 200, { day, next: open[0] ? { title: open[0].title, time: open[0].time || "", overdue: open[0].date < day } : null, today: open.length,
       bids: bids.map((t) => ({ title: t.title.replace(/^Review bid file:\s*/i, ""), when: t.deadline + (t.deadlineTime ? " " + t.deadlineTime : "") })), invoices: inv });
+  }
+
+  /* ---- Scan Boxes: one shared table; people see theirs, the owner sees all ---- */
+  if (p.startsWith("/api/scanbox/")) {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    if (sectionsFor(me.username).indexOf("scanbox") < 0) return json(res, 403, { error: "The owner hasn't switched Scan Boxes on for you." });
+    const owner = me.username === ownerName(), who = { username: me.username, name: me.displayName || me.username };
+    const rb = async () => { try { return JSON.parse(await body(req)); } catch (e) { return null; } };
+    try {
+      if (p === "/api/scanbox/read" && req.method === "POST") {
+        if (!ai.configured()) return json(res, 400, { error: "Scanning needs the OpenAI key set up." });
+        const b = await rb(); const img = String((b && b.image) || "").replace(/^data:[^,]+,/, "");
+        if (img.length < 100 || img.length > 8e6) return json(res, 400, { error: "No usable photo" });
+        const photoId = scanbox.savePhoto(DATA_DIR, img, me.username);
+        const r = await ai.scanBoxes(DATA_DIR, "scan-" + me.id, img, b.mime);
+        // Nothing readable: the photo isn't kept — take another.
+        const usable = r.boxes.filter((x) => x.model || x.imei1 || x.serial);
+        if (!usable.length) { scanbox.dropPhoto(DATA_DIR, photoId); return json(res, 200, { retake: r.retake || "Couldn't read any box — take it again" }); }
+        if (b.auto) {
+          // Rapid mode: save straight away; duplicates are not recorded at all.
+          const out = scanbox.save(DATA_DIR, { photoId, rows: usable }, who);
+          if (!out.saved.length) scanbox.dropPhoto(DATA_DIR, photoId);     // all duplicates: nothing to keep
+          const savedBy = new Map(out.saved.map((x) => [x.imei1 + "|" + x.serial + "|" + x.model + "|" + x.colour, x.id]));
+          return json(res, 200, { photoId, saved: out.saved.length, duplicates: out.skipped.filter((x) => /already scanned/.test(x.reason)).length,
+            boxes: usable.map((x) => { const n = scanbox.normalise(x); return { ...x, rowId: savedBy.get(n.imei1 + "|" + n.serial + "|" + n.model + "|" + n.colour) || null }; }) });
+        }
+        return json(res, 200, { photoId, boxes: usable.map((x) => ({ ...x, duplicates: scanbox.duplicates(DATA_DIR, x) })) });
+      }
+      if (p === "/api/scanbox/reread" && req.method === "POST") {
+        const b = await rb(); const img = String((b && b.image) || "").replace(/^data:[^,]+,/, "");
+        if (img.length < 100 || img.length > 6e6) return json(res, 400, { error: "No usable image" });
+        const got = await ai.readOneBox(DATA_DIR, "scan-" + me.id, img);
+        const r = scanbox.applyReread(DATA_DIR, me, owner, String(b.id || ""), got);
+        return json(res, r.error ? 400 : 200, r);
+      }
+      if (p === "/api/scanbox/save" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, scanbox.save(DATA_DIR, b, who)); }
+      if (p === "/api/scanbox/check" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, { duplicates: scanbox.duplicates(DATA_DIR, b) }); }
+      if (p === "/api/scanbox/list" && req.method === "GET") {
+        const rows = scanbox.list(DATA_DIR, me, owner);
+        return json(res, 200, { owner, me: me.username, rows, people: [...new Set(rows.map((r) => r.byName || r.by))] });
+      }
+      if (p === "/api/scanbox/edit" && req.method === "POST") { const b = (await rb()) || {}; const r = scanbox.edit(DATA_DIR, me, owner, String(b.id), String(b.field), b.value); return json(res, r.error ? 400 : 200, r); }
+      if (p === "/api/scanbox/hide" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, { hidden: scanbox.hide(DATA_DIR, me, owner, (b.ids || []).map(String)) }); }
+      const ph = p.match(/^\/api\/scanbox\/photo\/([a-f0-9]{18})$/);
+      if (ph && req.method === "GET") {
+        const buf = scanbox.photoFor(DATA_DIR, me, owner, ph[1]);
+        if (!buf) return json(res, 404, { error: "not found" });
+        res.writeHead(200, { "content-type": "image/jpeg", "cache-control": "private, max-age=86400" }); return res.end(buf);
+      }
+      if (p === "/api/scanbox/export" && req.method === "POST") {
+        const b = (await rb()) || {}, want = new Set((b.ids || []).map(String));
+        const rows = scanbox.list(DATA_DIR, me, owner).filter((r) => !b.ids || want.has(r.id));
+        const mark = (c) => (c === "barcode" ? "✓ barcode" : c === "valid" ? "✓ check digit" : c === "bad" ? "⚠ fails check digit" : c === "typed" ? "typed" : c === "read" ? "read" : "—");
+        const fill = (c) => (c === "bad" ? "red" : c === "barcode" || c === "valid" ? "green" : null);
+        const filt = Object.entries(b.filters || {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · ") || "none";
+        const buf = require("./lib/xlsxw").build([{ name: "Scanned boxes", freezeCols: 1,
+          preface: [{ text: "Scanned boxes", title: true }, { text: `Exported ${new Date().toISOString()} by ${who.name} · ${rows.length} rows · filters: ${filt}` }],
+          columns: [{ header: "IMEI 1", get: (r) => ({ v: r.imei1, fill: fill(r.checks.imei1) }), width: 18 }, { header: "IMEI 1 check", get: (r) => mark(r.checks.imei1), width: 16 },
+            { header: "IMEI 2", get: (r) => ({ v: r.imei2, fill: fill(r.checks.imei2) }), width: 18 }, { header: "IMEI 2 check", get: (r) => mark(r.checks.imei2), width: 16 },
+            { header: "Serial", key: "serial", width: 18 }, { header: "Brand", key: "brand", width: 10 }, { header: "Model", key: "model", width: 22 }, { header: "Colour", key: "colour", width: 16 },
+            { header: "RAM", key: "ram", width: 8 }, { header: "Storage", key: "storage", width: 9 }, { header: "Product model", key: "productModel", width: 14 }, { header: "EID", key: "eid", width: 34 },
+            { header: "Scanned at", get: (r) => r.at.replace("T", " ").slice(0, 16), width: 17 }, { header: "Scanned by", get: (r) => r.byName || r.by, width: 16 },
+            { header: "Edits", get: (r) => (r.edits || []).map((e) => `${e.field}: ${e.from || "—"} → ${e.to || "—"} (${e.by})`).join("; "), width: 40 }, { header: "Note", key: "note", width: 30 }],
+          rows }]);
+        res.writeHead(200, { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="scanned-boxes-${new Date().toISOString().slice(0, 10)}.xlsx"`, "cache-control": "no-store" });
+        return res.end(buf);
+      }
+    } catch (e) { return json(res, 500, { error: "Scan Boxes: " + String(e && e.message || e) }); }
+    return json(res, 404, { error: "not found" });
   }
 
   /* ---- Repair Devices ---- */

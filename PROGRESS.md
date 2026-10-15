@@ -579,6 +579,52 @@ Repair Workflow, Costs & Margins, Files & Data Quality. Not deployed by Claude.
   choosing Amber zeroed the others). "Unassigned highest-priority" uses a
   candidates filter (Not mapped + Waiting for repair, no eligibility flags).
 
+### 15 October 2026 — Scan Boxes
+New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
+`public/scanbox.js`, `ai.scanBoxes`).
+- Photo (camera or files, several at once) of one box or a stack → AI reads
+  each box: brand, model, colour, RAM, storage, IMEI 1/2, serial, product
+  model, EID; told to leave unclear digits empty rather than guess.
+- IMEIs checked with the Luhn check digit (✓ / ⚠ fails / — missing). Where the
+  browser has BarcodeDetector (Chrome/Android; not Safari/iPad), barcode values
+  confirm exact matches and correct 1–2-digit misreads; never invents matches.
+- Review before saving: editable rows with live checks, photo thumbnails,
+  already-scanned warnings (unticked by default, "save anyway").
+- One shared table on the server (data/scanbox/rows.json + photos): each row
+  has who and when. People see their own rows; the owner sees everyone's, with
+  a "Scanned by" filter. Others can't open the owner's photos or edit his rows.
+  Edits logged (field, from, to, who, when); Remove only hides. Filters: date,
+  person, search, needs-checking. Formatted Excel export (IMEIs as text, check
+  status coloured, edits listed).
+- Tested with Prakash's stack photo (6 boxes) against a pretend AI: a
+  mistyped IMEI flagged and fixed, an unreadable box left blank, a second user's
+  rescan caught as duplicates, owner sees both users, edit log, hide, export.
+
+### 15 October 2026 — Scan Boxes: rapid mode for big batches (3,500 devices)
+- **⚡ Rapid mode** (default on): shoot continuously; photos queue and are read
+  4 at a time in the background; rows save straight into the table (live).
+- **On-phone photo check before upload** (no upload if it fails): long side
+  < 1000 px, mean brightness < 45 / > 238, Laplacian variance < 40 (blur) →
+  "take it again" with the reason; "Use this one anyway" available.
+- **AI can't read it** → photo deleted, retake asked within seconds.
+- **Duplicates never recorded**: skipped against the table and within the same
+  batch; if a close-up later shows a just-created row is a duplicate (no other
+  identifier, unedited, < 10 min old) the row is removed and its photo dropped
+  when no rows remain; photos with only duplicates aren't kept.
+- **Close-up re-read**: the AI returns each box's position; for boxes with a
+  missing/failed IMEI or missing serial, the phone crops that box from the
+  full-size photo and `/api/scanbox/reread` (ai.readOneBox) fills in only
+  numbers that pass the IMEI check digit; logged as an "AI close-up re-read"
+  edit.
+- Scanning has its own daily AI allowance (SCAN_DAILY_LIMIT, default 5,000),
+  separate from the 400 general limit; `ai.call` accepts a per-job limit.
+- Tested: blurry/dark/small rejected on the phone with zero uploads; 6 boxes
+  saved in 3.5 s with 2 IMEIs fixed by close-up; 7 more photos of the same
+  stack in parallel (5.5 s vs ~10.5 s serial) → 42 duplicates skipped, still 6
+  rows and 1 photo; unreadable photo → retake, not kept.
+- Expected real throughput: ~10 s per photo, 4 in parallel → ~600 photos
+  (3,500 devices) ≈ 25 min of AI time while shooting; ~$3–6 total.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
