@@ -4,7 +4,32 @@
   "use strict";
   const ctx = () => window.__myday || null;
   const S = { host: null, data: null, review: null, busy: "", f: { q: "", from: "", to: "", who: "", status: "" }, edit: null, pick: new Set(), showRemoved: false,
-    rapid: true, Q: { items: [], running: 0, saved: 0, dups: 0, fixed: 0 } };
+    rapid: true, Q: { items: [], running: 0, saved: 0, dups: 0, fixed: 0 }, projects: null, project: null };
+  const lastProject = () => { try { return localStorage.getItem("myday_scan_project") || ""; } catch (e) { return ""; } };
+  const rememberProject = (id) => { try { id ? localStorage.setItem("myday_scan_project", id) : localStorage.removeItem("myday_scan_project"); } catch (e) {} };
+  /* The owner locked the project mid-scan: back to the list, with the reason. */
+  function projectLocked() {
+    if (!S.project) return;
+    const name = S.project.name; S.project = null; rememberProject("");
+    S.projErr = `"${name}" was locked for scanning by the owner — pick another project.`;
+    loadProjects().then(draw);
+  }
+  async function loadProjects() {
+    try { const r = await fetch("/api/scanbox/projects", { credentials: "same-origin" }); const j = await r.json(); if (r.ok) { S.projects = j.projects; S.isOwner = j.owner; } } catch (e) {}
+    if (!S.project) { const last = lastProject(); const hit = (S.projects || []).find((p) => p.id === last && !p.archived && !p.locked); if (hit) S.project = hit; }
+  }
+  function projectsHtml() {
+    const P = S.projects; if (!P) return `<p class="sb-dim">Loading projects…</p>`;
+    const live = P.filter((p) => !p.archived), arch = P.filter((p) => p.archived);
+    const card = (p) => `<div class="sb-proj ${p.archived ? "arch" : ""} ${p.locked ? "locked" : ""}"><button class="sb-proj-open" data-proj="${esc(p.id)}"><b>${p.locked ? "🔒 " : ""}${esc(p.name)}</b>
+        <span>${p.rows} box${p.rows === 1 ? "" : "es"}${S.isOwner ? "" : " scanned by you"}${p.createdAt ? ` · started ${esc(p.createdAt.slice(0, 10))}` : ""}${p.locked ? " · locked for scanning" : ""}${p.archived ? " · archived" : ""}</span></button>
+      ${S.isOwner && !p.legacy ? `<div class="sb-proj-act"><button class="sb-lock ${p.locked ? "on" : ""}" data-lock="${esc(p.id)}">${p.locked ? "🔓 Unlock scanning" : "🔒 Lock scanning"}</button><button class="sb-link" data-rename="${esc(p.id)}">Rename</button><button class="sb-link" data-archive="${esc(p.id)}">${p.archived ? "Unarchive" : "Archive"}</button></div>` : ""}</div>`;
+    return `<div class="sb-top"><div><h1>Scan Boxes</h1><p class="sb-dim">Choose a project to scan into. Each project has its own table and its own Excel export.</p></div></div>
+      ${S.isOwner ? `<div class="sb-panel"><div class="sb-row"><input class="sb-newproj" placeholder="New project name, e.g. October POCO lot" maxlength="80"><button class="sb-pri" data-newproj>+ Create project</button></div>${S.projErr ? `<p class="sb-warn">${esc(S.projErr)}</p>` : ""}</div>` : ""}
+      ${!S.isOwner && S.projErr ? `<p class="sb-warn sb-panel">${esc(S.projErr)}</p>` : ""}
+      ${live.length ? `<div class="sb-projs">${live.map(card).join("")}</div>` : `<div class="sb-panel"><p class="sb-dim">${S.isOwner ? "No projects yet — create one above." : "No projects yet. Ask the owner to create one, then it appears here."}</p></div>`}
+      ${arch.length ? `<details class="sb-arch"><summary>Archived (${arch.length})</summary><div class="sb-projs">${arch.map(card).join("")}</div></details>` : ""}`;
+  }
   const WORKERS = 4;
 
   /* ---------- rapid mode: check on the phone, queue, read 4 at a time, save straight in ---------- */
@@ -48,7 +73,7 @@
   }
   async function enqueue(files, force) {
     for (const file of files) {
-      const it = { key: Math.random().toString(36).slice(2), file, name: file.name, status: "checking", msg: "" };
+      const it = { key: Math.random().toString(36).slice(2), file, name: file.name, status: "checking", msg: "", projectId: S.project && S.project.id !== "none" ? S.project.id : null };
       S.Q.items.unshift(it); draw();
       try {
         const { img, url } = await loadImg(file); it.thumb = url; it.img = img;
@@ -93,15 +118,20 @@
   async function work(it) {
     // 1) upload (quick) → a ticket. Retried uploads of the same photo get the same ticket.
     const image = it.payload || (it.payload = jpeg(it.img, 2400));
-    let up = await steady("/api/scanbox/upload", { uploadId: it.key, image, mime: "image/jpeg", auto: true }, it);
-    if (!up.ok) { it.status = "error"; it.msg = up.j.error || "Upload refused"; return; }
+    const projectId = it.projectId;
+    let up = await steady("/api/scanbox/upload", { uploadId: it.key, image, mime: "image/jpeg", auto: true, projectId }, it);
+    if (!up.ok) {
+      it.status = "error"; it.msg = up.j.error || "Upload refused";
+      if (up.j.locked) { it.msg = "This project was locked for scanning — photo not saved"; projectLocked(); }
+      return;
+    }
     it.msg = up.j.ahead ? `uploaded — ${up.j.ahead} ahead in the queue` : "uploaded — reading…"; draw();
     // 2) check the ticket until the server has read it (works across pauses and restarts).
     let j;
     for (;;) {
       await nap(2000);
       const r = await steady("/api/scanbox/job?id=" + encodeURIComponent(it.key), null, it);
-      if (r.status === 404 && r.j.unknown) { up = await steady("/api/scanbox/upload", { uploadId: it.key, image, mime: "image/jpeg", auto: true }, it); continue; }
+      if (r.status === 404 && r.j.unknown) { up = await steady("/api/scanbox/upload", { uploadId: it.key, image, mime: "image/jpeg", auto: true, projectId }, it); continue; }
       if (!r.ok) { it.status = "error"; it.msg = r.j.error || "Couldn't read this photo"; return; }
       if (r.j.status === "error") { it.status = "error"; it.msg = r.j.error || "Couldn't read this photo"; return; }
       if (r.j.status === "done") { j = r.j.result; break; }
@@ -124,7 +154,7 @@
       const image = jpeg(it.img, 1800, [sx, sy, sw, sh], b.rotation);
       if (b.pending) {
         const { pending, rowId, box, ...data } = b;
-        const r = await steady("/api/scanbox/reread", { photoId: j.photoId, box: data, image }, null);
+        const r = await steady("/api/scanbox/reread", { photoId: j.photoId, box: data, image, projectId }, null);
         if (r.ok && r.j.saved) { it.saved++; S.Q.saved++; fixed++; }
         else if (r.ok && r.j.duplicate) { it.dups++; S.Q.dups++; }
         else retakeBoxes.push(`${[b.brand, b.model].filter(Boolean).join(" ") || "a box"}${b.position ? " (" + b.position + ")" : ""}`);
@@ -141,7 +171,7 @@
   /* The buttons live on <body>, so "fixed" means the screen, not the page content. */
   let fabHost = null;
   function drawFab() {
-    if (!S.host) { if (fabHost) { fabHost.remove(); fabHost = null; } return; }
+    if (!S.host || !S.project || S.project.legacy || S.project.locked) { if (fabHost) { fabHost.remove(); fabHost = null; } return; }
     if (!fabHost) {
       fabHost = document.createElement("div"); document.body.appendChild(fabHost);
       fabHost.addEventListener("change", (e) => onChange(e));
@@ -249,7 +279,7 @@
     S.busy = "Saving…"; draw();
     let saved = 0, skipped = [];
     for (const [photoId, rows] of Object.entries(byPhoto)) {
-      const { ok, j } = await post("/api/scanbox/save", { photoId, rows });
+      const { ok, j } = await post("/api/scanbox/save", { photoId, rows, projectId: S.project && S.project.id !== "none" ? S.project.id : null });
       if (ok) { saved += j.saved.length; skipped = skipped.concat(j.skipped); } else skipped.push({ reason: j.error });
     }
     S.busy = ""; S.review = skipped.length ? { ...R, boxes: [], error: `Saved ${saved}. Skipped ${skipped.length}: ${skipped.map((x) => x.reason).join(" · ")}` } : null;
@@ -259,7 +289,8 @@
 
   /* ---------- the table ---------- */
   async function load() {
-    try { const r = await fetch("/api/scanbox/list" + (S.showRemoved ? "?removed=1" : ""), { credentials: "same-origin" }); const j = await r.json(); if (r.ok) S.data = j; else S.err = j.error; } catch (e) { S.err = "Couldn't reach the server"; }
+    if (!S.project) return draw();
+    try { const r = await fetch("/api/scanbox/list?project=" + encodeURIComponent(S.project.id) + (S.showRemoved ? "&removed=1" : ""), { credentials: "same-origin" }); const j = await r.json(); if (r.ok) S.data = j; else S.err = j.error; } catch (e) { S.err = "Couldn't reach the server"; }
     draw();
   }
   function rows() {
@@ -271,9 +302,9 @@
   }
   async function exportXlsx() {
     const list = rows();
-    const r = await fetch("/api/scanbox/export", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids: list.map((x) => x.id), filters: { search: S.f.q, from: S.f.from, to: S.f.to, by: S.f.who, status: S.f.status } }) });
+    const r = await fetch("/api/scanbox/export", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: S.project && S.project.id, ids: list.map((x) => x.id), filters: { search: S.f.q, from: S.f.from, to: S.f.to, by: S.f.who, status: S.f.status } }) });
     if (!r.ok) return alert("Export failed");
-    const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = `scanned-boxes-${new Date().toISOString().slice(0, 10)}.xlsx`; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1000);
+    const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); const cd = (r.headers.get("content-disposition") || "").match(/filename="([^"]+)"/); a.download = cd ? cd[1] : `scanned-boxes-${new Date().toISOString().slice(0, 10)}.xlsx`; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1000);
   }
 
   /* ---------- drawing ---------- */
@@ -321,7 +352,13 @@
   function draw() {
     if (!S.host) return;
     const c = ctx();
+    if (!S.project) {
+      S.host.innerHTML = `<div class="sb ${c && c.isDark === false ? "light" : "dark"}" style="--a:${(c && c.accent) || "#2FBF87"}">${projectsHtml()}</div>`;
+      drawFab(); return;
+    }
     S.host.innerHTML = `<div class="sb ${c && c.isDark === false ? "light" : "dark"}" style="--a:${(c && c.accent) || "#2FBF87"}">
+      <div class="sb-projbar"><button class="sb-sec" data-changeproj>← Projects</button><span>Project</span><b>${S.project.locked ? "🔒 " : ""}${esc(S.project.name)}</b></div>
+      ${S.project.locked ? `<div class="sb-panel sb-lockbanner">🔒 Scanning is locked for this project. You can still view and export it. <button class="sb-lock" data-lock="${esc(S.project.id)}">🔓 Unlock scanning</button></div>` : ""}
       <div class="sb-top"><div><h1>Scan Boxes</h1><p class="sb-dim">Photo of one box or a whole stack → brand, model, colour, RAM, storage, IMEIs and serial for each. Every scan is saved with who and when.</p></div>
         <label class="sb-pri sb-cam">📷 Scan boxes<input type="file" accept="image/*" capture="environment" multiple hidden data-scan></label>
         <label class="sb-sec sb-cam">Choose photos<input type="file" accept="image/*" multiple hidden data-scan></label></div>
@@ -332,6 +369,19 @@
   }
   function onClick(e) {
     const t = e.target, R = S.review;
+    if (t.closest && t.closest("[data-proj]")) { const id = t.closest("[data-proj]").dataset.proj; S.project = S.projects.find((p) => p.id === id); rememberProject(S.project && !S.project.legacy ? id : ""); S.pick.clear(); S.data = null; draw(); return load(); }
+    if (t.hasAttribute("data-changeproj")) { S.project = null; rememberProject(""); S.Q = { items: S.Q.items, running: S.Q.running, saved: 0, dups: 0, fixed: 0 }; return loadProjects().then(draw); }
+    if (t.hasAttribute("data-newproj")) {
+      const name = S.host.querySelector(".sb-newproj").value.trim(); S.projErr = "";
+      return post("/api/scanbox/projects", { name }).then(async (x) => { if (!x.ok) { S.projErr = x.j.error; return draw(); } await loadProjects(); draw(); });
+    }
+    if (t.dataset.rename) { const p = S.projects.find((x) => x.id === t.dataset.rename); const name = prompt("Rename project", p.name); if (!name) return; return post("/api/scanbox/projects", { id: p.id, name }).then(() => loadProjects()).then(draw); }
+    if (t.dataset.lock) {
+      const p = S.projects.find((x) => x.id === t.dataset.lock);
+      if (!p.locked && !confirm(`Lock "${p.name}" for scanning?\n\nIt disappears from everyone else's list and new photos into it are refused. You can unlock it any time.`)) return;
+      return post("/api/scanbox/projects", { id: p.id, locked: !p.locked }).then(async () => { await loadProjects(); if (S.project && S.project.id === p.id) S.project = S.projects.find((x) => x.id === p.id); draw(); });
+    }
+    if (t.dataset.archive) { const p = S.projects.find((x) => x.id === t.dataset.archive); return post("/api/scanbox/projects", { id: p.id, archived: !p.archived }).then(() => loadProjects()).then(draw); }
     if (t.dataset.photo) { window.open("/api/scanbox/photo/" + t.dataset.photo, "_blank", "noopener"); return; }
     if (t.dataset.force) { const it = S.Q.items.find((x) => x.key === t.dataset.force); if (it && it.img) { it.status = "waiting"; it.msg = ""; it.local = false; draw(); pump(); } return; }
     if (t.dataset.dismiss) { S.Q.items = S.Q.items.filter((x) => x.key !== t.dataset.dismiss); return draw(); }
@@ -416,6 +466,17 @@
   .sb-fab-btn:active{transform:scale(.97)}
   .sb{padding-bottom:150px}.sb-fab ~ *{}
   body.sb-on .mda-launch{display:none !important}
+  .sb-projbar{display:flex;gap:10px;align-items:center;margin:16px 0 -10px;font-size:13px;color:var(--muted)}.sb-projbar b{color:var(--a);font-size:15px}
+  .sb-projs{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin-bottom:14px}
+  .sb-proj{border:1px solid var(--line);background:var(--card);border-radius:16px;overflow:hidden}.sb-proj.arch{opacity:.6}
+  .sb-proj-open{display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;border:0;background:none;padding:16px;cursor:pointer;color:var(--ink)}
+  .sb-proj-open b{font-size:17px}.sb-proj-open span{font-size:12.5px;color:var(--muted)}.sb-proj-open:hover{background:var(--chip)}
+  .sb-proj-act{display:flex;gap:14px;padding:0 16px 12px}
+  .sb-newproj{flex:1;min-width:220px;border:1px solid var(--line);background:var(--chip);border-radius:11px;padding:11px 13px;font-size:15px;color:var(--ink)}
+  .sb-proj.locked{border-color:rgba(242,84,91,.45)}
+  .sb-lock{border:1px solid var(--line);background:var(--chip);border-radius:9px;padding:5px 10px;font-size:12.5px;font-weight:700;cursor:pointer;color:#F2545B}
+  .sb-lock.on{color:#22C55E}.sb-lockbanner{border-color:rgba(242,84,91,.5);display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--ink)}
+  .sb-arch summary{cursor:pointer;color:var(--muted);margin:6px 0 10px}
   .sb-tog{display:flex;gap:7px;align-items:center;font-size:12.5px;color:var(--muted);margin:0 0 10px}
   .sb-stat{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}.sb-stat b{color:var(--ink)}.sb-stat.ok b{color:#22C55E}.sb-stat.bad{border-color:#F2545B;color:#F2545B}
   .sb-retakes{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;margin:8px 0}
@@ -445,7 +506,7 @@
     if (!document.getElementById("sb-css")) { const st = document.createElement("style"); st.id = "sb-css"; st.textContent = CSS; document.head.appendChild(st); }
     document.body.classList.add("sb-on");          // make room for the big buttons
     S.host = host; host.addEventListener("click", onClick); host.addEventListener("change", onChange); host.addEventListener("input", onInput);
-    draw(); load();
+    draw(); loadProjects().then(() => (S.project ? load() : draw()));
   }
   function unmount() { S.host = null; document.body.classList.remove("sb-on"); drawFab(); }
   window.MYDAYScanBox = { mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };

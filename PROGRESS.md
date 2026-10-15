@@ -722,6 +722,35 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested at iPhone size: blurry → Retake shown; retake → 6 saved, Retake
   gone; Next photo while another is still reading; duplicates line.
 
+### 16 October 2026 — Scan Boxes projects
+- The owner creates named projects (data/scanbox/projects.json); can rename
+  and archive (archived hidden from staff; never deleted). Staff can't create
+  or change projects (403).
+- Scan Boxes opens on a project list; choosing one opens the usual scanning
+  screen with a "← Projects · <name>" bar; the last project is remembered per
+  device. Every row (rapid upload jobs, close-up saves, review saves) carries
+  projectId; the table, removed view, counts and Excel export are per project;
+  the export is named "<project> - scanned boxes - <date>.xlsx".
+- Duplicates are checked within the same project (the same phone can appear in
+  a later project). One-line change in `duplicates()` to make it global.
+- Earlier rows (no project) are untouched and listed as "Earlier scans (no
+  project)".
+- Owner sees everyone's rows in every project; staff see only their own.
+- Tested with two users end to end (create, pick, scan, same boxes in two
+  projects, rescan duplicates, visibility, export name, archive).
+
+### 16 October 2026 — Scan Boxes: lock / unlock a project for scanning
+- Owner: 🔒 Lock scanning / 🔓 Unlock on each project card (and in the locked
+  project's banner). Locked projects vanish from staff lists; the owner sees
+  them marked 🔒 and can view/export; no scan buttons while locked.
+- Server refuses new uploads and review saves into a locked or archived
+  project (HTTP 423). Photos already uploaded before the lock still finish.
+- A phone inside a project that gets locked: the next photo is refused, it
+  returns to the project list with the reason.
+- Tested with two users: lock while staff scanning → refused, 0 rows, back to
+  list showing only open projects; direct upload 423; owner banner; unlock
+  restores it for staff.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

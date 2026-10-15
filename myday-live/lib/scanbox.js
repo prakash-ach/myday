@@ -47,10 +47,10 @@ function savePhoto(dir, b64, username) {
 
 /* Who else already scanned these identifiers (visible rows only). */
 function duplicates(dir, row, exceptId) {
-  const d = read(dir), out = [];
+  const d = read(dir), out = [], proj = row.projectId || null;
   const ids = [digits(row.imei1), digits(row.imei2), clean(row.serial, 40).toUpperCase()].filter((x) => x && x.length >= 6);
   for (const r of d.rows) {
-    if (r.hidden || r.id === exceptId) continue;
+    if (r.hidden || r.id === exceptId || (r.projectId || null) !== proj) continue;     // duplicates count within the same project
     const mine = [digits(r.imei1), digits(r.imei2), String(r.serial || "").toUpperCase()].filter(Boolean);
     const hit = ids.find((x) => mine.includes(x));
     if (hit) out.push({ id: r.id, value: hit, at: r.at, by: r.byName || r.by });
@@ -84,14 +84,15 @@ function normalise(r) {
 }
 
 /* Save reviewed rows. Rows whose IMEI/serial already exist are skipped unless allowDuplicate is set. */
-function save(dir, { photoId, rows }, user) {
+function save(dir, { photoId, rows, projectId }, user) {
   const d = read(dir), saved = [], skipped = [];
+  const proj = projectId && project(dir, projectId) ? projectId : null;
   for (const raw of (rows || []).slice(0, 40)) {
-    const r = normalise(raw);
+    const r = { ...normalise(raw), projectId: proj };
     if (!r.model && !r.imei1 && !r.serial) { skipped.push({ row: r, reason: "empty — no model, IMEI or serial" }); continue; }
     const ids = [r.imei1, r.imei2, r.serial].filter((x) => x && x.length >= 6);
     const inBatch = saved.find((x) => [x.imei1, x.imei2, x.serial].some((v) => v && ids.includes(v)));
-    const dup = inBatch ? [{ id: inBatch.id, value: ids.find((v) => [inBatch.imei1, inBatch.imei2, inBatch.serial].includes(v)), at: inBatch.at, by: user.name }] : duplicates(dir, r);
+    const dup = inBatch ? [{ id: inBatch.id, value: ids.find((v) => [inBatch.imei1, inBatch.imei2, inBatch.serial].includes(v)), at: inBatch.at, by: user.name }] : duplicates(dir, { ...r, projectId: proj });
     if (dup.length && !raw.allowDuplicate) { skipped.push({ row: r, reason: `already scanned: ${dup[0].value} on ${dup[0].at.slice(0, 10)} by ${dup[0].by}` }); continue; }
     const how = raw.how || {};
     const rec = {
@@ -106,13 +107,44 @@ function save(dir, { photoId, rows }, user) {
 }
 
 const canSee = (r, me, owner) => owner || r.by === me.username;
-function list(dir, me, owner, withRemoved) {
+function list(dir, me, owner, withRemoved, projectId) {
   const d = read(dir);
+  if (projectId !== undefined) d.rows = d.rows.filter((r) => (r.projectId || "none") === projectId);
   // Older rows are shown cleaned (brand once, model without it); what's stored isn't rewritten.
   // Removed rows only for the owner, and only when asked for.
   return d.rows.filter((r) => (!r.hidden || (owner && withRemoved)) && canSee(r, me, owner)).sort((a, b) => (a.at < b.at ? 1 : -1)).map(view);
 }
-const removedCount = (dir) => read(dir).rows.filter((r) => r.hidden).length;
+const removedCount = (dir, projectId) => read(dir).rows.filter((r) => r.hidden && (projectId === undefined || (r.projectId || "none") === projectId)).length;
+
+/* ---------- projects: the owner names them; everyone scans into one ---------- */
+const pfile = (dir) => path.join(root(dir), "projects.json");
+const projects = (dir) => { try { return JSON.parse(fs.readFileSync(pfile(dir), "utf8")); } catch (e) { return []; } };
+const project = (dir, id) => projects(dir).find((p) => p.id === id) || null;
+function saveProjects(dir, list) { fs.mkdirSync(root(dir), { recursive: true }); const t = pfile(dir) + ".tmp"; fs.writeFileSync(t, JSON.stringify(list), { mode: 0o600 }); fs.renameSync(t, pfile(dir)); }
+function createProject(dir, me, name) {
+  const n = clean(name, 80); if (!n) return { error: "Give the project a name" };
+  const list = projects(dir);
+  if (list.some((p) => p.name.toLowerCase() === n.toLowerCase() && !p.archived)) return { error: "There's already a project with that name" };
+  const p = { id: crypto.randomBytes(6).toString("hex"), name: n, createdAt: new Date().toISOString(), createdBy: me.username };
+  saveProjects(dir, [...list, p]); return { project: p };
+}
+function updateProject(dir, me, id, change) {
+  const list = projects(dir), p = list.find((x) => x.id === id); if (!p) return { error: "not found" };
+  if (change.name != null) { const n = clean(change.name, 80); if (!n) return { error: "Give the project a name" }; p.name = n; }
+  if (change.archived != null) p.archived = change.archived ? { at: new Date().toISOString(), by: me.username } : undefined;
+  if (change.locked != null) p.locked = change.locked ? { at: new Date().toISOString(), by: me.username } : undefined;   // scanning stopped
+  saveProjects(dir, list); return { project: p };
+}
+/* Projects with row counts (people count their own rows; the owner counts all). */
+function projectList(dir, me, owner) {
+  const rows = read(dir).rows.filter((r) => !r.hidden && canSee(r, me, owner));
+  const count = (id) => rows.filter((r) => (r.projectId || "none") === id).length;
+  // Staff only see projects that are open for scanning.
+  const out = projects(dir).filter((p) => owner || (!p.archived && !p.locked)).map((p) => ({ ...p, rows: count(p.id) }));
+  const none = count("none");
+  if (none) out.push({ id: "none", name: "Earlier scans (no project)", rows: none, legacy: true });
+  return out;
+}
 
 /* Owner only: bring removed rows back. */
 function restore(dir, me, ids) {
@@ -177,7 +209,7 @@ function applyReread(dir, me, owner, id, got) {
   for (const f of ["imei1", "imei2"]) {
     const v = digits(got[f]);
     if (luhn(v) && r.checks[f] !== "barcode" && r.checks[f] !== "valid" && v !== r[f]) {
-      const clash = duplicates(dir, { [f]: v }, r.id);
+      const clash = duplicates(dir, { [f]: v, projectId: r.projectId }, r.id);
       if (clash.length) {
         // The close-up shows this box was already scanned. A row with no other identifier is just a
         // duplicate made by this scan, so it's taken out of the table (hidden, with the reason).
@@ -204,13 +236,13 @@ function dropPhoto(dir, id) { try { fs.unlinkSync(photo(dir, id)); fs.unlinkSync
 /* A box the stack photo couldn't identify (no IMEI, no serial): never saved as
    an empty row. The close-up read decides: numbers found → saved (duplicate-
    checked); otherwise "retake this box". */
-function saveFromCloseup(dir, user, photoId, box, got) {
+function saveFromCloseup(dir, user, photoId, box, got, projectId) {
   if (got.model && box.model && modelOnly(box.brand, got.model).toLowerCase() !== modelOnly(box.brand, box.model).toLowerCase()) return { retake: true, reason: "close-up showed a different box" };
   const row = { ...box, imei1: luhn(digits(got.imei1)) ? got.imei1 : "", imei2: luhn(digits(got.imei2)) ? got.imei2 : "", serial: got.serial || "" };
   for (const f of ["colour", "ram", "storage"]) if (!row[f] && got[f]) row[f] = got[f];
   if (!row.imei1 && !row.serial) return { retake: true, reason: "IMEI and serial still unreadable" };
-  const out = save(dir, { photoId, rows: [row] }, user);
+  const out = save(dir, { photoId, rows: [row], projectId }, user);
   return out.saved.length ? { saved: out.saved[0].id } : { duplicate: true };
 }
 
-module.exports = { saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };
+module.exports = { project, projects, createProject, updateProject, projectList, saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };

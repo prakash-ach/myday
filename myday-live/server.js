@@ -923,7 +923,10 @@ const server = http.createServer(async (req, res) => {
     if (known) return json(res, 200, { jobId: uid, status: known.status });           // a retried upload: same ticket
     const img = String(b.image || "").replace(/^data:[^,]+,/, "");
     if (img.length < 100 || img.length > 8e6) return json(res, 400, { error: "No usable photo" });
-    scanJobs.set(key, { status: "queued", at: Date.now(), me, img, mime: b.mime });
+    const proj = scanbox.project(DATA_DIR, String(b.projectId || ""));
+    if (proj && (proj.locked || proj.archived)) return json(res, 423, { error: `${proj.name} is locked for scanning — choose another project`, locked: true });
+    const projectId = proj ? proj.id : null;
+    scanJobs.set(key, { status: "queued", at: Date.now(), me, img, mime: b.mime, projectId });
     pumpScans();
     return json(res, 200, { jobId: uid, status: "queued", ahead: scanQueueLength() });
   }
@@ -967,18 +970,30 @@ const server = http.createServer(async (req, res) => {
         if (img.length < 100 || img.length > 6e6) return json(res, 400, { error: "No usable image" });
         if (b.box) {                          // a box not saved yet: the close-up decides
           const got = await ai.readOneBox(DATA_DIR, "scan-" + me.id, img, b.box);
-          return json(res, 200, scanbox.saveFromCloseup(DATA_DIR, who, String(b.photoId || ""), b.box, got));
+          return json(res, 200, scanbox.saveFromCloseup(DATA_DIR, who, String(b.photoId || ""), b.box, got, String(b.projectId || "") || null));
         }
         const row = scanbox.list(DATA_DIR, me, owner).find((x) => x.id === String(b.id || ""));
         const got = await ai.readOneBox(DATA_DIR, "scan-" + me.id, img, row);
         const r = scanbox.applyReread(DATA_DIR, me, owner, String(b.id || ""), got);
         return json(res, r.error ? 400 : 200, r);
       }
-      if (p === "/api/scanbox/save" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, scanbox.save(DATA_DIR, b, who)); }
+      if (p === "/api/scanbox/save" && req.method === "POST") {
+        const b = (await rb()) || {}, pr = scanbox.project(DATA_DIR, String(b.projectId || ""));
+        if (pr && (pr.locked || pr.archived)) return json(res, 423, { error: `${pr.name} is locked for scanning`, locked: true });
+        return json(res, 200, scanbox.save(DATA_DIR, b, who));
+      }
       if (p === "/api/scanbox/check" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, { duplicates: scanbox.duplicates(DATA_DIR, b) }); }
+      if (p === "/api/scanbox/projects" && req.method === "GET") return json(res, 200, { owner, projects: scanbox.projectList(DATA_DIR, me, owner) });
+      if (p === "/api/scanbox/projects" && req.method === "POST") {
+        if (!owner) return json(res, 403, { error: "Only the owner creates projects." });
+        const b = (await rb()) || {};
+        const r = b.id ? scanbox.updateProject(DATA_DIR, me, String(b.id), b) : scanbox.createProject(DATA_DIR, me, b.name);
+        return json(res, r.error ? 400 : 200, r);
+      }
       if (p === "/api/scanbox/list" && req.method === "GET") {
-        const rows = scanbox.list(DATA_DIR, me, owner, url.searchParams.get("removed") === "1");
-        return json(res, 200, { owner, me: me.username, rows, people: [...new Set(rows.map((r) => r.byName || r.by))], removed: owner ? scanbox.removedCount(DATA_DIR) : undefined });
+        const pid = url.searchParams.has("project") ? String(url.searchParams.get("project")) : undefined;
+        const rows = scanbox.list(DATA_DIR, me, owner, url.searchParams.get("removed") === "1", pid);
+        return json(res, 200, { owner, me: me.username, rows, people: [...new Set(rows.map((r) => r.byName || r.by))], removed: owner ? scanbox.removedCount(DATA_DIR, pid) : undefined });
       }
       if ((p === "/api/scanbox/restore" || p === "/api/scanbox/purge") && req.method === "POST") {
         if (!owner) return json(res, 403, { error: "Only the owner can do that." });
@@ -996,11 +1011,13 @@ const server = http.createServer(async (req, res) => {
       if (p === "/api/scanbox/export" && req.method === "POST") {
         const b = (await rb()) || {}, want = new Set((b.ids || []).map(String));
         const rows = scanbox.list(DATA_DIR, me, owner).filter((r) => !b.ids || want.has(r.id));
+        const proj = b.projectId === "none" ? { name: "Earlier scans" } : scanbox.project(DATA_DIR, String(b.projectId || ""));
+        const pname = proj ? proj.name : "All projects";
         const mark = (c) => (c === "barcode" ? "✓ barcode" : c === "valid" ? "✓ check digit" : c === "bad" ? "⚠ fails check digit" : c === "typed" ? "typed" : c === "read" ? "read" : "—");
         const fill = (c) => (c === "bad" ? "red" : c === "barcode" || c === "valid" ? "green" : null);
         const filt = Object.entries(b.filters || {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · ") || "none";
         const buf = require("./lib/xlsxw").build([{ name: "Scanned boxes", freezeCols: 1,
-          preface: [{ text: "Scanned boxes", title: true }, { text: `Exported ${new Date().toISOString()} by ${who.name} · ${rows.length} rows · filters: ${filt}` }],
+          preface: [{ text: `${pname} — scanned boxes`, title: true }, { text: `Project: ${pname} · exported ${new Date().toISOString()} by ${who.name} · ${rows.length} rows · filters: ${filt}` }],
           columns: [{ header: "IMEI 1", get: (r) => ({ v: r.imei1, fill: fill(r.checks.imei1) }), width: 18 }, { header: "IMEI 1 check", get: (r) => mark(r.checks.imei1), width: 16 },
             { header: "IMEI 2", get: (r) => ({ v: r.imei2, fill: fill(r.checks.imei2) }), width: 18 }, { header: "IMEI 2 check", get: (r) => mark(r.checks.imei2), width: 16 },
             { header: "Serial", key: "serial", width: 18 }, { header: "Brand", key: "brand", width: 10 }, { header: "Model", key: "model", width: 22 }, { header: "Colour", key: "colour", width: 16 },
@@ -1008,7 +1025,7 @@ const server = http.createServer(async (req, res) => {
             { header: "Scanned at", get: (r) => r.at.replace("T", " ").slice(0, 16), width: 17 }, { header: "Scanned by", get: (r) => r.byName || r.by, width: 16 },
             { header: "Edits", get: (r) => (r.edits || []).map((e) => `${e.field}: ${e.from || "—"} → ${e.to || "—"} (${e.by})`).join("; "), width: 40 }, { header: "Note", key: "note", width: 30 }],
           rows }]);
-        res.writeHead(200, { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="scanned-boxes-${new Date().toISOString().slice(0, 10)}.xlsx"`, "cache-control": "no-store" });
+        res.writeHead(200, { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="${pname.replace(/[^\w .-]+/g, "").trim().slice(0, 60) || "Scan"} - scanned boxes - ${new Date().toISOString().slice(0, 10)}.xlsx"`, "cache-control": "no-store" });
         return res.end(buf);
       }
     } catch (e) { return json(res, 500, { error: "Scan Boxes: " + String(e && e.message || e) }); }
@@ -1476,7 +1493,7 @@ async function runScan(job) {
   // Boxes with neither a valid IMEI nor a serial can't be told apart from boxes already scanned:
   // they wait for a close-up instead of becoming empty rows.
   const hasId = (x) => scanbox.luhn(scanbox.digits(x.imei1)) || scanbox.luhn(scanbox.digits(x.imei2)) || (x.serial && x.serial.length >= 6);
-  const out = scanbox.save(DATA_DIR, { photoId, rows: usable.filter(hasId) }, who);
+  const out = scanbox.save(DATA_DIR, { photoId, rows: usable.filter(hasId), projectId: job.projectId }, who);
   const pending = usable.filter((x) => !hasId(x));
   if (!out.saved.length && !pending.length) scanbox.dropPhoto(DATA_DIR, photoId);
   const savedBy = new Map(out.saved.map((x) => [x.imei1 + "|" + x.serial + "|" + x.model + "|" + x.colour, x.id]));
