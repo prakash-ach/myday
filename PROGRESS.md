@@ -625,6 +625,58 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Expected real throughput: ~10 s per photo, 4 in parallel → ~600 photos
   (3,500 devices) ≈ 25 min of AI time while shooting; ~$3–6 total.
 
+### 16 October 2026 — phones: every section reachable
+- The phone bottom bar showed only Today, All tasks, Calendar and Projects, so
+  newer sections (Automation, Captured Invoices, Repair Devices, Scan Boxes,
+  News, Trade-In, etc.) couldn't be reached on mobile. The last slot is now
+  **More**, opening an "All sections" sheet (3-column grid) of every section
+  the person has access to, plus Settings. Staff see only their sections.
+  Bundle patch 23.
+
+### 16 October 2026 — Scan Boxes: any orientation
+- Photos taken any way up: browsers apply the photo's EXIF orientation when
+  drawing it, so the AI and crops get the photo as seen.
+- Boxes turned within a photo: the AI now reports each label's "rotation"
+  (0/90/180/270, clockwise to upright) and reads at any angle. The close-up
+  re-read crops that box and turns it upright before sending
+  (`rotCanvas`). Turned boxes also get the close-up when the AI is < 80% sure,
+  not only for failed/missing IMEIs or a missing serial.
+- Tested: upright-turning correct at 90/180/270; a sideways EXIF-tagged photo
+  plus the new photo at 0/90/180/270 → 6 rows, 24 duplicates skipped, C75
+  close-up sent turned upright; no errors. (Stand-in AI: proves the turning,
+  cropping and flow, not the real model's reading accuracy at each angle.)
+
+### 16 October 2026 — Scan Boxes: brand and model separate; RAM and storage separate
+- Model no longer repeats the brand ("realme Note 70" → brand realme, model
+  Note 70; repeated prefixes too). Only the row's own brand is removed, so
+  "Xiaomi Redmi Note 13" keeps "Redmi Note 13". Brand spelling made consistent
+  for known brands (POCO, Redmi, Xiaomi, realme, Samsung, Apple, OPPO, vivo…).
+- New scans are saved clean; older rows are shown and exported cleaned without
+  rewriting what's stored (global rule). AI told the model must not include
+  the brand.
+- Table and Excel: separate Brand, Model, Colour, RAM, Storage columns.
+
+### 16 October 2026 — phones: side menu + bottom bar in pages of 4
+- ☰ button on the phone top bar opens a side menu (from the left) listing
+  every section the person can open, plus Settings.
+- Bottom bar: 4 sections per page (2 left, 2 right) with the + button fixed in
+  the middle; swipe left/right for the next/previous 4; tappable page dots under
+  the +. Opening a section from the side menu turns the bar to its page.
+  Solid background, iPhone home-bar safe area. Replaces the "More" button.
+  Bundle patches 24–25.
+- Tested at iPhone size: 4 pages (owner), swipe both ways, dot tap, side menu
+  → Scan Boxes; staff see one page with their sections only.
+
+### 16 October 2026 — Scan Boxes: owner can see removed rows, restore, delete permanently
+- Owner only: "Show removed (N)" switch shows hidden rows faded with who
+  removed them and when; Restore (logged in the row's history); Delete
+  permanently — only rows already removed (two steps), with a confirmation;
+  the photo is deleted too when no other row uses it; a deletion record
+  (data/scanbox/deletions.json: ids, IMEIs, serial, model, who, when) is kept.
+- Staff: can only remove (hide) their own rows; no removed view; restore and
+  purge refused (403) server-side.
+- Tested with two users end to end.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

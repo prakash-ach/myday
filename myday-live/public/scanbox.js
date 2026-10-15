@@ -3,7 +3,7 @@
 (function () {
   "use strict";
   const ctx = () => window.__myday || null;
-  const S = { host: null, data: null, review: null, busy: "", f: { q: "", from: "", to: "", who: "", status: "" }, edit: null, pick: new Set(),
+  const S = { host: null, data: null, review: null, busy: "", f: { q: "", from: "", to: "", who: "", status: "" }, edit: null, pick: new Set(), showRemoved: false,
     rapid: true, Q: { items: [], running: 0, saved: 0, dups: 0, fixed: 0 } };
   const WORKERS = 4;
 
@@ -29,11 +29,22 @@
     return "";
   }
   const loadImg = (file) => new Promise((res, rej) => { const img = new Image(), url = URL.createObjectURL(file); img.onload = () => res({ img, url }); img.onerror = () => rej(new Error("not a photo")); img.src = url; });
-  function jpeg(img, max, crop) {
-    const [sx, sy, sw, sh] = crop || [0, 0, img.naturalWidth, img.naturalHeight];
-    const k = Math.min(1, max / Math.max(sw, sh)), cv = document.createElement("canvas");
-    cv.width = Math.round(sw * k); cv.height = Math.round(sh * k); cv.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  /* A JPEG of the photo (or a crop of it), turned `rot` degrees clockwise so
+     its text reads upright. Browsers already apply the photo's own EXIF
+     orientation when drawing it. */
+  function jpeg(img, max, crop, rot) {
+    const cv = rotCanvas(img, max, crop, rot);
     return cv.toDataURL("image/jpeg", 0.88).split(",")[1];
+  }
+  function rotCanvas(img, max, crop, rot) {
+    const [sx, sy, sw, sh] = crop || [0, 0, img.naturalWidth || img.width, img.naturalHeight || img.height];
+    const r = ((Number(rot) || 0) % 360 + 360) % 360, side = r === 90 || r === 270;
+    const k = Math.min(1, max / Math.max(sw, sh)), w = Math.round(sw * k), h = Math.round(sh * k);
+    const cv = document.createElement("canvas"); cv.width = side ? h : w; cv.height = side ? w : h;
+    const g = cv.getContext("2d");
+    g.translate(cv.width / 2, cv.height / 2); g.rotate((r * Math.PI) / 180);
+    g.drawImage(img, sx, sy, sw, sh, -w / 2, -h / 2, w, h);
+    return cv;
   }
   async function enqueue(files, force) {
     for (const file of files) {
@@ -65,14 +76,15 @@
     it.msg = `${j.saved} saved${j.duplicates ? ` · ${j.duplicates} duplicate${j.duplicates === 1 ? "" : "s"} skipped` : ""}`;
     // Close-up re-read for boxes whose IMEI is missing or fails its check digit.
     const W = it.img.naturalWidth, H = it.img.naturalHeight;
-    const needs = (j.boxes || []).filter((b) => b.rowId && b.box && (!luhn(digits(b.imei1)) || (b.imei2 && !luhn(digits(b.imei2))) || !b.serial));
+    // Close-up when an IMEI is missing/fails its check, the serial is missing, or a turned box wasn't read with confidence.
+    const needs = (j.boxes || []).filter((b) => b.rowId && b.box && (!luhn(digits(b.imei1)) || (b.imei2 && !luhn(digits(b.imei2))) || !b.serial || (b.rotation && (b.confidence || 0) < 0.8)));
     if (needs.length) { it.msg += ` · re-reading ${needs.length} up close…`; draw(); }
     let fixed = 0;
     await Promise.all(needs.map(async (b) => {
       const [x, y, w, h] = b.box, pad = 0.04;
       const sx = Math.max(0, (x - pad) * W), sy = Math.max(0, (y - pad) * H), sw = Math.min(W - sx, (w + 2 * pad) * W), sh = Math.min(H - sy, (h + 2 * pad) * H);
       if (sw < 50 || sh < 50) return;
-      const r = await post("/api/scanbox/reread", { id: b.rowId, image: jpeg(it.img, 1800, [sx, sy, sw, sh]) });
+      const r = await post("/api/scanbox/reread", { id: b.rowId, image: jpeg(it.img, 1800, [sx, sy, sw, sh], b.rotation) });
       if (r.ok && r.j.duplicate) { it.saved--; S.Q.saved--; it.dups++; S.Q.dups++; }
       else if (r.ok && r.j.changed) fixed++;
     }));
@@ -171,7 +183,7 @@
 
   /* ---------- the table ---------- */
   async function load() {
-    try { const r = await fetch("/api/scanbox/list", { credentials: "same-origin" }); const j = await r.json(); if (r.ok) S.data = j; else S.err = j.error; } catch (e) { S.err = "Couldn't reach the server"; }
+    try { const r = await fetch("/api/scanbox/list" + (S.showRemoved ? "?removed=1" : ""), { credentials: "same-origin" }); const j = await r.json(); if (r.ok) S.data = j; else S.err = j.error; } catch (e) { S.err = "Couldn't reach the server"; }
     draw();
   }
   function rows() {
@@ -217,15 +229,17 @@
       <label>Status <select data-f="status"><option value="">All</option><option value="check" ${S.f.status === "check" ? "selected" : ""}>⚠ Needs checking</option><option value="ok" ${S.f.status === "ok" ? "selected" : ""}>✓ IMEI verified</option></select></label>
       <span class="sb-dim" style="margin-left:auto">${list.length} of ${D.rows.length}${D.owner ? " · you see everyone's scans" : " · your scans"}</span>
       <button class="sb-sec" data-export ${list.length ? "" : "disabled"}>⬇ Excel</button>
-      ${S.pick.size ? `<button class="sb-sec warn" data-hide>Remove ${S.pick.size}</button>` : ""}</div>
-      <div class="sb-wrap"><table class="sb-table"><thead><tr><th><input type="checkbox" data-all aria-label="Select all"></th><th>Scanned</th><th>By</th><th>Brand · model</th><th>Colour</th><th>RAM / storage</th><th>IMEI 1</th><th>IMEI 2</th><th>Serial</th><th>Product model</th><th></th></tr></thead><tbody>
-      ${list.slice(0, 500).map((r) => S.edit === r.id ? `<tr class="editing"><td></td><td colspan="10"><div class="sb-fields">${F_EDIT.map(([f, l]) => `<label>${l}<input data-ef="${f}" value="${esc(r[f])}"></label>`).join("")}</div>
+      ${D.owner ? `<label class="sb-tog" style="margin:0"><input type="checkbox" data-showremoved ${S.showRemoved ? "checked" : ""}> Show removed${D.removed ? ` (${D.removed})` : ""}</label>` : ""}
+      ${(() => { const sel = D.rows.filter((r) => S.pick.has(r.id)), live = sel.filter((r) => !r.hidden).length, gone = sel.filter((r) => r.hidden).length;
+        return `${live ? `<button class="sb-sec warn" data-hide>Remove ${live}</button>` : ""}${gone && D.owner ? `<button class="sb-sec" data-restore>Restore ${gone}</button><button class="sb-sec danger" data-purge>Delete ${gone} permanently</button>` : ""}`; })()}</div>
+      <div class="sb-wrap"><table class="sb-table"><thead><tr><th><input type="checkbox" data-all aria-label="Select all"></th><th>Scanned</th><th>By</th><th>Brand</th><th>Model</th><th>Colour</th><th>RAM</th><th>Storage</th><th>IMEI 1</th><th>IMEI 2</th><th>Serial</th><th>Product model</th><th></th></tr></thead><tbody>
+      ${list.slice(0, 500).map((r) => S.edit === r.id ? `<tr class="editing"><td></td><td colspan="13"><div class="sb-fields">${F_EDIT.map(([f, l]) => `<label>${l}<input data-ef="${f}" value="${esc(r[f])}"></label>`).join("")}</div>
           <div class="sb-row"><button class="sb-pri" data-esave="${r.id}">Save changes</button><button class="sb-sec" data-ecancel>Cancel</button>${(r.edits || []).length ? `<span class="sb-dim">${r.edits.length} earlier edit(s): ${esc(r.edits.slice(-3).map((e) => `${e.field} ${e.from || "—"}→${e.to || "—"} by ${e.by}`).join("; "))}</span>` : ""}</div></td></tr>`
-        : `<tr><td><input type="checkbox" data-pick="${r.id}" ${S.pick.has(r.id) ? "checked" : ""}></td><td>${esc(r.at.slice(0, 10))}<small>${esc(r.at.slice(11, 16))}</small></td><td>${esc(r.byName || r.by)}</td>
-          <td><b>${esc(r.brand)}</b> ${esc(r.model)}</td><td>${esc(r.colour)}</td><td>${esc(r.ram)}${r.ram && r.storage ? " / " : ""}${esc(r.storage)}</td>
+        : `<tr class="${r.hidden ? "removed" : ""}"><td><input type="checkbox" data-pick="${r.id}" ${S.pick.has(r.id) ? "checked" : ""}></td><td>${esc(r.at.slice(0, 10))}<small>${esc(r.at.slice(11, 16))}</small>${r.hidden ? `<small class="sb-rm">Removed by ${esc(r.hidden.name || r.hidden.by)} ${esc(String(r.hidden.at).slice(0, 10))}</small>` : ""}</td><td>${esc(r.byName || r.by)}</td>
+          <td><b>${esc(r.brand)}</b></td><td>${esc(r.model)}</td><td>${esc(r.colour)}</td><td>${esc(r.ram)}</td><td>${esc(r.storage)}</td>
           <td class="mono">${mark(r.checks.imei1)} ${esc(r.imei1 || "—")}</td><td class="mono">${mark(r.checks.imei2)} ${esc(r.imei2 || "—")}</td><td class="mono">${mark(r.checks.serial)} ${esc(r.serial || "—")}</td>
           <td class="mono">${esc(r.productModel)}</td><td>${r.photoId ? `<button class="sb-link" data-photo="${esc(r.photoId)}">Photo</button>` : ""} <button class="sb-link" data-edit="${r.id}">Edit</button>${(r.edits || []).length ? `<small>edited</small>` : ""}</td></tr>`).join("")
-        || `<tr><td colspan="11" class="sb-empty">${D.rows.length ? "Nothing matches these filters." : "No boxes scanned yet. Tap 📷 Scan boxes to start."}</td></tr>`}</tbody></table></div>
+        || `<tr><td colspan="14" class="sb-empty">${D.rows.length ? "Nothing matches these filters." : "No boxes scanned yet. Tap 📷 Scan boxes to start."}</td></tr>`}</tbody></table></div>
       ${list.length > 500 ? `<p class="sb-dim">Showing the newest 500 — use the filters or Excel for the rest.</p>` : ""}`;
   }
   function draw() {
@@ -255,15 +269,27 @@
       const changes = [...S.host.querySelectorAll("[data-ef]")].filter((i) => i.value !== String(r[i.dataset.ef] || ""));
       return (async () => { for (const i of changes) await post("/api/scanbox/edit", { id, field: i.dataset.ef, value: i.value }); S.edit = null; await load(); })();
     }
+    const selRows = () => (S.data ? S.data.rows.filter((r) => S.pick.has(r.id)) : []);
     if (t.hasAttribute("data-hide")) {
-      if (!confirm(`Remove ${S.pick.size} row(s) from the table? They're hidden, not deleted.`)) return;
-      return post("/api/scanbox/hide", { ids: [...S.pick] }).then(() => { S.pick.clear(); load(); });
+      const ids = selRows().filter((r) => !r.hidden).map((r) => r.id);
+      if (!confirm(`Remove ${ids.length} row(s) from the table? They're hidden, not deleted.`)) return;
+      return post("/api/scanbox/hide", { ids }).then(() => { S.pick.clear(); load(); });
+    }
+    if (t.hasAttribute("data-restore")) {
+      const ids = selRows().filter((r) => r.hidden).map((r) => r.id);
+      return post("/api/scanbox/restore", { ids }).then((x) => { S.pick.clear(); const c = ctx(); c && c.setToast && c.setToast(`Restored ${x.j.restored}`); load(); });
+    }
+    if (t.hasAttribute("data-purge")) {
+      const ids = selRows().filter((r) => r.hidden).map((r) => r.id);
+      if (!confirm(`Delete ${ids.length} removed row(s) PERMANENTLY?\n\nThey and their photos (if no other row uses them) are erased and can't be brought back. A record of the deleted IMEIs/serials is kept.`)) return;
+      return post("/api/scanbox/purge", { ids }).then((x) => { S.pick.clear(); const c = ctx(); c && c.setToast && c.setToast(`Deleted ${x.j.deleted} permanently`); load(); });
     }
   }
   function onChange(e) {
     const t = e.target, R = S.review;
     if (t.hasAttribute("data-scan")) { const files = [...t.files]; t.value = ""; if (files.length) (S.rapid ? enqueue(files) : scan(files)); return; }
     if (t.hasAttribute("data-rapid")) { S.rapid = t.checked; return draw(); }
+    if (t.hasAttribute("data-showremoved")) { S.showRemoved = t.checked; S.pick.clear(); return load(); }
     if (t.dataset.inc != null) { R.boxes[+t.dataset.inc].include = t.checked; return draw(); }
     if (t.dataset.dup != null) { const b = R.boxes[+t.dataset.dup]; b.allowDuplicate = t.checked; if (t.checked) b.include = true; return draw(); }
     if (t.dataset.pick) { t.checked ? S.pick.add(t.dataset.pick) : S.pick.delete(t.dataset.pick); return draw(); }
@@ -291,6 +317,8 @@
   .sb-pri{border:0;border-radius:12px;padding:11px 18px;font-weight:700;color:#fff;background:var(--a);cursor:pointer;font-size:14px}.sb-pri:disabled{opacity:.5}
   .sb-sec{border:1px solid var(--line);background:var(--chip);border-radius:10px;padding:8px 12px;cursor:pointer;color:var(--muted)}.sb-sec.warn{color:#F2545B}
   .sb-cam{display:inline-flex;align-items:center}
+  .sb-table tr.removed td{opacity:.55}.sb-table tr.removed td:first-child{opacity:1}.sb-rm{color:#F2545B !important}
+  .sb-sec.danger{color:#fff;background:#F2545B;border-color:#F2545B;font-weight:700}
   .sb-tog{display:flex;gap:7px;align-items:center;font-size:12.5px;color:var(--muted);margin:0 0 10px}
   .sb-stat{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}.sb-stat b{color:var(--ink)}.sb-stat.ok b{color:#22C55E}.sb-stat.bad{border-color:#F2545B;color:#F2545B}
   .sb-retakes{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;margin:8px 0}
@@ -322,5 +350,5 @@
     draw(); load();
   }
   function unmount() { S.host = null; }
-  window.MYDAYScanBox = { mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn };
+  window.MYDAYScanBox = { mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
 })();

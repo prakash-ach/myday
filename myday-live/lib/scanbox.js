@@ -58,6 +58,20 @@ function duplicates(dir, row, exceptId) {
   return out;
 }
 
+/* Brand spelled one way; model without the brand in front ("realme Note 70" → "Note 70"). */
+const BRANDS = ["POCO", "Redmi", "Xiaomi", "realme", "Samsung", "Apple", "Google", "Motorola", "OnePlus", "OPPO", "vivo", "HONOR", "Nothing", "Infinix", "TECNO", "Huawei", "Nokia", "ZTE", "TCL", "Sony", "Asus"];
+function canonBrand(b) { const t = clean(b, 30); const hit = BRANDS.find((x) => x.toLowerCase() === t.toLowerCase()); return hit || t; }
+function modelOnly(brand, model) {
+  let m = clean(model, 60);
+  const names = [brand].filter(Boolean).map((x) => String(x).toLowerCase());    // only this row's own brand
+  for (let again = true; again;) {
+    again = false;
+    for (const n of names) if (m.toLowerCase().startsWith(n + " ") && m.length > n.length + 1) { m = m.slice(n.length + 1).trim(); again = true; }
+  }
+  return m;
+}
+const view = (r) => ({ ...r, brand: canonBrand(r.brand), model: modelOnly(r.brand, r.model) });     // display only
+
 const FIELDS = ["brand", "model", "colour", "ram", "storage", "imei1", "imei2", "serial", "productModel", "eid", "note"];
 function normalise(r) {
   const o = {};
@@ -65,6 +79,7 @@ function normalise(r) {
   for (const f of ["imei1", "imei2"]) o[f] = digits(o[f]).slice(0, 17);
   o.ram = o.ram.replace(/\s+/g, "").toUpperCase().replace(/G$/, "GB"); o.storage = o.storage.replace(/\s+/g, "").toUpperCase().replace(/G$/, "GB");
   o.serial = o.serial.replace(/\s+/g, "").toUpperCase();
+  o.brand = canonBrand(o.brand); o.model = modelOnly(o.brand, o.model);
   return o;
 }
 
@@ -91,9 +106,39 @@ function save(dir, { photoId, rows }, user) {
 }
 
 const canSee = (r, me, owner) => owner || r.by === me.username;
-function list(dir, me, owner) {
+function list(dir, me, owner, withRemoved) {
   const d = read(dir);
-  return d.rows.filter((r) => !r.hidden && canSee(r, me, owner)).sort((a, b) => (a.at < b.at ? 1 : -1));
+  // Older rows are shown cleaned (brand once, model without it); what's stored isn't rewritten.
+  // Removed rows only for the owner, and only when asked for.
+  return d.rows.filter((r) => (!r.hidden || (owner && withRemoved)) && canSee(r, me, owner)).sort((a, b) => (a.at < b.at ? 1 : -1)).map(view);
+}
+const removedCount = (dir) => read(dir).rows.filter((r) => r.hidden).length;
+
+/* Owner only: bring removed rows back. */
+function restore(dir, me, ids) {
+  const d = read(dir); let n = 0;
+  for (const r of d.rows) if (ids.includes(r.id) && r.hidden) {
+    r.edits = [...(r.edits || []), { at: new Date().toISOString(), by: me.username, field: "restored", from: `removed by ${r.hidden.by}`, to: "" }];
+    delete r.hidden; n++;
+  }
+  write(dir, d); return n;
+}
+/* Owner only: delete removed rows for good. Only rows that were removed first
+   (two steps), their photo too when no other row uses it, and a record of
+   what was deleted (identifiers only), by whom and when. */
+function purge(dir, me, ids) {
+  const d = read(dir);
+  const gone = d.rows.filter((r) => ids.includes(r.id) && r.hidden);
+  if (!gone.length) return 0;
+  d.rows = d.rows.filter((r) => !gone.includes(r));
+  write(dir, d);
+  for (const r of gone) if (r.photoId && !d.rows.some((x) => x.photoId === r.photoId)) dropPhoto(dir, r.photoId);
+  const logF = path.join(root(dir), "deletions.json");
+  let log = []; try { log = JSON.parse(fs.readFileSync(logF, "utf8")); } catch (e) {}
+  const at = new Date().toISOString();
+  log.push(...gone.map((r) => ({ at, by: me.username, id: r.id, scannedAt: r.at, scannedBy: r.by, brand: r.brand, model: r.model, imei1: r.imei1, imei2: r.imei2, serial: r.serial })));
+  fs.writeFileSync(logF, JSON.stringify(log), { mode: 0o600 });
+  return gone.length;
 }
 function edit(dir, me, owner, id, field, value) {
   if (!FIELDS.includes(field)) return { error: "can't edit that" };
@@ -110,7 +155,7 @@ function edit(dir, me, owner, id, field, value) {
 }
 function hide(dir, me, owner, ids) {
   const d = read(dir); let n = 0;
-  for (const r of d.rows) if (ids.includes(r.id) && !r.hidden && canSee(r, me, owner)) { r.hidden = { at: new Date().toISOString(), by: me.username }; n++; }
+  for (const r of d.rows) if (ids.includes(r.id) && !r.hidden && canSee(r, me, owner)) { r.hidden = { at: new Date().toISOString(), by: me.username, name: me.displayName || me.username }; n++; }
   write(dir, d);
   return n;
 }
@@ -155,4 +200,4 @@ function applyReread(dir, me, owner, id, got) {
 }
 function dropPhoto(dir, id) { try { fs.unlinkSync(photo(dir, id)); fs.unlinkSync(photo(dir, id) + ".by"); } catch (e) {} }
 
-module.exports = { applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };
+module.exports = { removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };

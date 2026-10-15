@@ -946,8 +946,13 @@ const server = http.createServer(async (req, res) => {
       if (p === "/api/scanbox/save" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, scanbox.save(DATA_DIR, b, who)); }
       if (p === "/api/scanbox/check" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, { duplicates: scanbox.duplicates(DATA_DIR, b) }); }
       if (p === "/api/scanbox/list" && req.method === "GET") {
-        const rows = scanbox.list(DATA_DIR, me, owner);
-        return json(res, 200, { owner, me: me.username, rows, people: [...new Set(rows.map((r) => r.byName || r.by))] });
+        const rows = scanbox.list(DATA_DIR, me, owner, url.searchParams.get("removed") === "1");
+        return json(res, 200, { owner, me: me.username, rows, people: [...new Set(rows.map((r) => r.byName || r.by))], removed: owner ? scanbox.removedCount(DATA_DIR) : undefined });
+      }
+      if ((p === "/api/scanbox/restore" || p === "/api/scanbox/purge") && req.method === "POST") {
+        if (!owner) return json(res, 403, { error: "Only the owner can do that." });
+        const b = (await rb()) || {}, ids = (b.ids || []).map(String).slice(0, 5000);
+        return json(res, 200, p.endsWith("restore") ? { restored: scanbox.restore(DATA_DIR, me, ids) } : { deleted: scanbox.purge(DATA_DIR, me, ids) });
       }
       if (p === "/api/scanbox/edit" && req.method === "POST") { const b = (await rb()) || {}; const r = scanbox.edit(DATA_DIR, me, owner, String(b.id), String(b.field), b.value); return json(res, r.error ? 400 : 200, r); }
       if (p === "/api/scanbox/hide" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, { hidden: scanbox.hide(DATA_DIR, me, owner, (b.ids || []).map(String)) }); }
