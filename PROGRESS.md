@@ -829,6 +829,19 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested with a simulated camera: 6 rapid shots stored, reload mid-upload,
   resumed, all read, phone copies cleared.
 
+### 16 October 2026 — Scan Boxes: 4 slots per user, the rest wait on the phone
+- Server: SCAN_PER_USER (default 4) — the queue picks the oldest waiting photo
+  from someone using fewer than 4 slots, so one person can't take others'
+  slots; SCAN_CONCURRENCY raised to 12 (3 users × 4).
+- Phone: 4 photos processing at a time (unchanged); further photos wait on the
+  phone (kept in IndexedDB) until a slot frees. A live slot bar "⚙ Processing
+  N of 4 · M waiting on the phone · K done" with 4 slot lights; the camera
+  counter shows the same.
+- Tested: two users × 8 rapid camera shots → each "processing 4 of 4 · 4
+  waiting", all 16 read, nothing left on the phones. (Both test phones share
+  one browser's 6-connection limit, so server-side sampling lagged; real phones
+  each have their own.)
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

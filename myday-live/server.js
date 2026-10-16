@@ -1480,13 +1480,16 @@ setInterval(() => {
    never loses a photo — it just asks for the result again. */
 const scanJobs = new Map();                       // "user:uploadId" → { status, me, img, result, error }
 let scanRunning = 0;
-const SCAN_CONCURRENCY = Math.max(1, Number(process.env.SCAN_CONCURRENCY || 6));
+const SCAN_CONCURRENCY = Math.max(1, Number(process.env.SCAN_CONCURRENCY || 12));     // all users together
+const SCAN_PER_USER = Math.max(1, Number(process.env.SCAN_PER_USER || 4));            // each user's own slots
 const scanQueueLength = () => [...scanJobs.values()].filter((j) => j.status === "queued").length;
 const scanBusy = () => [...scanJobs.values()].filter((j) => j.status === "queued" || j.status === "reading").length;   // waiting + being read, all users
 const SCAN_QUEUE_LIMIT = Math.max(4, Number(process.env.SCAN_QUEUE_LIMIT || 20));
 function pumpScans() {
   while (scanRunning < SCAN_CONCURRENCY) {
-    const next = [...scanJobs.values()].filter((j) => j.status === "queued").sort((a, b) => a.at - b.at)[0];
+    // Fair: the oldest waiting photo from someone using fewer than their 4 slots.
+    const reading = {}; for (const j of scanJobs.values()) if (j.status === "reading") reading[j.me.username] = (reading[j.me.username] || 0) + 1;
+    const next = [...scanJobs.values()].filter((j) => j.status === "queued" && (reading[j.me.username] || 0) < SCAN_PER_USER).sort((a, b) => a.at - b.at)[0];
     if (!next) break;
     next.status = "reading"; scanRunning++;
     runScan(next).catch((e) => { next.status = "error"; next.error = String(e && e.message || e); })

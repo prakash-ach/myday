@@ -89,7 +89,7 @@
     while (S.Q.running < WORKERS) {
       const it = S.Q.items.slice().reverse().find((x) => x.status === "waiting");
       if (!it) break;
-      S.Q.running++; it.status = "reading"; draw();
+      S.Q.running++; it.status = "reading"; draw(); camCount();
       work(it).finally(() => { S.Q.running--; it.img = it.status === "retake" ? it.img : null; it.blob = it.status === "retake" ? it.blob : null; draw(); refreshSoon(); pump(); });
     }
   }
@@ -250,7 +250,8 @@
   function camCount() {
     if (!CAM.el) return;
     const waiting = S.Q.items.filter((x) => ["checking", "waiting", "reading"].includes(x.status)).length;
-    CAM.el.querySelector(".sb-cam-count").textContent = `${CAM.taken} taken · ${waiting} on the phone, uploading`;
+    const busyNow = S.Q.items.filter((x) => x.status === "reading").length;
+    CAM.el.querySelector(".sb-cam-count").textContent = `${CAM.taken} taken · processing ${busyNow} of ${WORKERS} · ${Math.max(0, waiting - busyNow)} waiting`;
   }
   function flash(text, bad) { const f = CAM.el && CAM.el.querySelector(".sb-cam-flash"); if (!f) return; f.textContent = text; f.className = "sb-cam-flash show" + (bad ? " bad" : ""); clearTimeout(f.t); f.t = setTimeout(() => (f.className = "sb-cam-flash"), 1100); }
   /* Grab the square from the full-resolution frame (with a little margin), check it, keep it on the phone, queue it. */
@@ -295,10 +296,14 @@
     const last = S.Q.items.find((x) => ["done", "retake", "error"].includes(x.status));
     const busy = S.Q.items.filter((x) => ["checking", "waiting", "reading"].includes(x.status)).length;
     const full = isFull(), total = S.server.queue + localPending();
+    const busyNow = S.Q.items.filter((x) => x.status === "reading").length, onPhone = S.Q.items.filter((x) => x.status === "waiting" || x.status === "checking").length;
+    const doneN = S.Q.items.filter((x) => x.status === "done").length;
     const line = full ? `⏳ Server busy — ${total} photos in the queue (limit ${S.server.limit}). Wait a moment, the button unlocks by itself.`
       : last ? (last.status === "done" ? `✓ ${esc(last.msg.split(" · ").slice(0, 2).join(" · "))}` : `⚠ ${esc(last.msg)}`) : "Point at the box labels and tap 📷";
     return `<div class="sb-fab">
-      <div class="sb-fab-msg ${full ? "busy" : last && last.status !== "done" ? "bad" : ""}">${line}${busy ? ` <span>· ${busy} reading in the background</span>` : ""}</div>
+      <div class="sb-fab-msg ${full ? "busy" : last && last.status !== "done" ? "bad" : ""}">${line}</div>
+      ${busyNow || onPhone ? `<div class="sb-slots" aria-label="Processing ${busyNow} of ${WORKERS}">⚙ Processing <b>${busyNow} of ${WORKERS}</b>
+        ${Array.from({ length: WORKERS }, (_, i) => `<i class="${i < busyNow ? "on" : ""}"></i>`).join("")}${onPhone ? ` · <b>${onPhone}</b> waiting on the phone` : ""}${doneN ? ` · ${doneN} done` : ""}</div>` : ""}
       <div class="sb-fab-row">
         ${rt.length ? `<label class="sb-fab-btn retake">↻ Retake${rt.length > 1 ? ` (${rt.length})` : ""}<small>${esc((rt[0].msg || "").replace(/\s*\((not uploaded|photo not kept|not saved)\)/, "").slice(0, 46))}</small><input type="file" accept="image/*" capture="environment" hidden data-retake="${rt[0].key}"></label>` : ""}
         <button class="sb-fab-btn cam" data-opencam>📸 Camera<small>square guide · tap tap tap</small></button>
@@ -596,6 +601,9 @@
     color:#fff;box-shadow:0 14px 34px -12px rgba(0,0,0,.55);user-select:none;-webkit-tap-highlight-color:transparent}
   .sb-fab-btn.next{background:linear-gradient(135deg,var(--a),color-mix(in srgb,var(--a) 70%,#000))}
   .sb-fab-btn.next.off{background:#8C97A8;cursor:not-allowed;box-shadow:none}.sb-fab-msg.busy{color:#C9A227}
+  .sb-slots{align-self:center;pointer-events:auto;font-size:12.5px;padding:5px 12px;border-radius:999px;background:var(--bg);border:1px solid var(--line);color:var(--muted);display:flex;gap:5px;align-items:center;box-shadow:0 8px 24px -10px rgba(0,0,0,.4)}
+  .sb-slots b{color:var(--ink)}.sb-slots i{width:10px;height:10px;border-radius:3px;background:var(--chip);border:1px solid var(--line);display:inline-block}.sb-slots i.on{background:var(--a);border-color:var(--a);animation:sb-pulse 1s infinite}
+  @keyframes sb-pulse{50%{opacity:.45}}
   .sb-fab-btn.cam{background:linear-gradient(135deg,#4C8DF6,#2F62C9);border:0;font:inherit;font-weight:800;font-size:17px}
   .sb-cam-full{position:fixed;inset:0;z-index:2147483600;background:#000}
   .sb-cam-full video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
