@@ -245,7 +245,24 @@
     const BW = 8, cols = SW / BW, rows = SH / BW, grid = new Float32Array(cols * rows), mean = sum / gray.length;
     for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) grid[((y / BW) | 0) * cols + ((x / BW) | 0)] += gray[y * SW + x];
     for (let i = 0; i < grid.length; i++) grid[i] = grid[i] / (BW * BW) - mean;
-    return { gray, grid, mean, edges: edges / n, sharp: s2 / n - (s1 / n) ** 2 };
+    // Ring along the frame's edges: must be quiet — the whole label (4 corners) inside, no hand or object crossing in.
+    const R = 7; let ringE = 0, ringN = 0;
+    for (let y = 1; y < SH - 1; y++) for (let x = 1; x < SW - 1; x++) {
+      if (x > R && x < SW - 1 - R && y > R && y < SH - 1 - R) continue;
+      const i = y * SW + x; if (Math.abs(gray[i + 1] - gray[i - 1]) + Math.abs(gray[i + SW] - gray[i - SW]) > 40) ringE++; ringN++;
+    }
+    // Barcode: a run of many sharp, alternating light/dark bars along a row (or a column, for a turned box).
+    const bars = (len, at) => { let best = 0;
+      for (let a = 8; a < (len === SW ? SH : SW) - 8; a += 3) {
+        let flips = 0, last = 0, runStart = 0, runFlips = 0;
+        for (let b = 1; b < len; b++) {
+          const d = at(a, b) - at(a, b - 1); const sgn = d > 28 ? 1 : d < -28 ? -1 : 0;
+          if (sgn && sgn !== last) { if (b - runStart > 46) { runStart = b; runFlips = 0; } runFlips++; last = sgn; if (runFlips > best) best = runFlips; }
+        }
+      }
+      return best; };
+    const barH = bars(SW, (y, x) => gray[y * SW + x]), barV = bars(SH, (x, y) => gray[y * SW + x]);
+    return { gray, grid, mean, edges: edges / n, sharp: s2 / n - (s1 / n) ** 2, ring: ringE / ringN, bars: Math.max(barH, barV) };
   }
   const diffOf = (a, b) => { if (!a || !b || a.length !== b.length) return 255; let d = 0; for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]); return d / a.length; };
   function autoTick() {
@@ -254,14 +271,21 @@
     if (!CAM.ready || CAM.busy) return;
     const f = sampleFrame(); if (!f) return;
     const moving = diffOf(f.grid, AUTO.prev && AUTO.prev.grid); AUTO.prev = f; AUTO.lastInfo = { ...f, moving };
-    // After a shot, wait until the picture has clearly changed (the next box) before arming again.
-    if (!AUTO.armed) { if (diffOf(f.grid, AUTO.last) > 16) AUTO.armed = true; else return setAuto(`✓ ${CAM.taken} — place the next box`, 0); }
+    // Frame edges must look like the bare surface (its own texture allowed) — a cut-off label or a hand is much busier.
+    const ringMax = Math.max(0.06, (AUTO.bg || 0) + 0.04);
+    const isLabel = f.bars >= 12 && f.ring < ringMax && f.mean > 35 && f.mean < 250;
+    AUTO.lastInfo.isLabel = isLabel;
+    // One shot per box: after a shot, wait until that label has LEFT the frame before arming again.
+    if (!AUTO.armed) { if (!isLabel && f.edges < (AUTO.need || 0.08)) AUTO.armed = true; else return setAuto(`✓ ${CAM.taken} — next box`, 0); }
     // The empty surface (wood, mat…) is learned: the quietest view seen lately, creeping up slowly.
     // Only quiet views can be "the surface" — a label in view never becomes the background.
     if (f.edges < 0.08) AUTO.bg = AUTO.bg == null ? f.edges : Math.min(AUTO.bg + 0.0004, f.edges);
     const need = AUTO.bg == null ? 0.08 : Math.max(0.08, AUTO.bg + 0.03);
     AUTO.need = need;
-    if (!(f.edges > need && f.mean > 35 && f.mean < 250)) { AUTO.steady = 0; AUTO.seen = 0; return setAuto("Looking for a label…", 0); }
+    if (!(f.edges > need && isLabel)) {
+      AUTO.steady = 0; AUTO.seen = 0;
+      return setAuto(f.edges > need && f.ring >= ringMax ? "Fit all 4 corners inside — nothing crossing the frame" : f.edges > need ? "Looking for the barcode…" : "Place a box label in the frame", 0);
+    }
     // A label is in the frame: take it as soon as it settles (~0.2 s), or after ~0.6 s whatever the movement.
     AUTO.seen = (AUTO.seen || 0) + 1;
     if (moving <= 14) AUTO.steady++; else AUTO.steady = 0;
@@ -302,7 +326,7 @@
     unlockBeep();
     CAM.taken = 0;
     CAM.el = document.createElement("div"); CAM.el.className = "sb-cam-full";
-    CAM.el.innerHTML = `<video playsinline autoplay muted></video><div class="sb-cam-guide"><span>Fit the box label inside the frame</span></div>
+    CAM.el.innerHTML = `<video playsinline autoplay muted></video><div class="sb-cam-guide"><span>Fit the whole label inside — all 4 corners</span></div>
       <div class="sb-cam-top"><button data-camclose aria-label="Close camera">✕</button><span class="sb-cam-count"></span><small class="sb-cam-ver">v${esc(window.MYDAY_BUILD || "?")}</small><button data-torch aria-label="Torch" hidden>🔦</button></div>
       <div class="sb-cam-flash"></div><div class="sb-auto-msg" aria-live="polite"></div>
       <div class="sb-cam-bottom"><button class="sb-autotog ${CAM.auto ? "on" : ""}" data-auto>Auto ${CAM.auto ? "on" : "off"}</button><button class="sb-shutter" data-shoot aria-label="Take photo"></button><span style="width:74px"></span></div>`;
@@ -340,8 +364,11 @@
   function beep() {
     try {
       if (AC) { const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
-        o.type = "square"; o.frequency.setValueAtTime(2400, t); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
-        o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + 0.12); }
+        const o2 = AC.createOscillator(), f2 = AC.createBiquadFilter();       // handheld-scanner style: bright ~2.9 kHz, crisp attack, short tail
+        o.type = "square"; o.frequency.setValueAtTime(2900, t); o2.type = "sine"; o2.frequency.setValueAtTime(5800, t);
+        f2.type = "bandpass"; f2.frequency.value = 2900; f2.Q.value = 1.4;
+        g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.55, t + 0.004); g.gain.setValueAtTime(0.55, t + 0.085); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+        o.connect(f2); o2.connect(f2); f2.connect(g); g.connect(AC.destination); o.start(t); o2.start(t); o.stop(t + 0.15); o2.stop(t + 0.15); }
     } catch (e) {}
     try { navigator.vibrate && navigator.vibrate(40); } catch (e) {}
   }
@@ -785,5 +812,5 @@
     draw(); loadProjects().then(() => (S.project ? load() : draw())).then(pollQueue).then(resumeKept);
   }
   function unmount() { S.host = null; document.body.classList.remove("sb-on"); drawFab(); }
-  window.MYDAYScanBox = { _auto: () => AUTO.lastInfo && { edges: +AUTO.lastInfo.edges.toFixed(3), sharp: Math.round(AUTO.lastInfo.sharp), mean: Math.round(AUTO.lastInfo.mean), moving: +AUTO.lastInfo.moving.toFixed(1), need: AUTO.need && +AUTO.need.toFixed(3), bg: AUTO.bg != null ? +AUTO.bg.toFixed(3) : null }, mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
+  window.MYDAYScanBox = { _auto: () => AUTO.lastInfo && { edges: +AUTO.lastInfo.edges.toFixed(3), sharp: Math.round(AUTO.lastInfo.sharp), mean: Math.round(AUTO.lastInfo.mean), moving: +AUTO.lastInfo.moving.toFixed(1), need: AUTO.need && +AUTO.need.toFixed(3), ring: AUTO.lastInfo.ring != null ? +AUTO.lastInfo.ring.toFixed(3) : null, bars: AUTO.lastInfo.bars, isLabel: AUTO.lastInfo.isLabel, bg: AUTO.bg != null ? +AUTO.bg.toFixed(3) : null }, mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
 })();

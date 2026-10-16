@@ -903,6 +903,20 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested: empty wood → 0; 3 boxes sliding over wood → 3 (beep each); opening on
   a label → 0.3 s; empty plain → 0.
 
+### 17 October 2026 — auto-capture: whole label only, one shot per box, scanner beep
+- Capture only when: a barcode is seen (≥ 12 sharp alternating bars along a
+  row or column, either orientation) + text/edge density above the learned
+  surface + the frame's edge ring looks like bare surface (ring < max(0.06,
+  surface + 0.04)) — i.e. all 4 corners inside, no hand/object crossing in.
+  Prompts: "Place a box label in the frame" / "Looking for the barcode…" /
+  "Fit all 4 corners inside — nothing crossing the frame".
+- One shot per box: after a capture it re-arms only once that label has left
+  the frame (no label + quiet), so a box resting there is never taken twice.
+- Scanner-style beep: 2.9 kHz square + 5.8 kHz sine through a band-pass,
+  crisp attack, ~140 ms.
+- Tested: wood → 0; boxes sliding over wood → 1 per box; cut-off label → 0
+  with the corners prompt; empty → 0.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
