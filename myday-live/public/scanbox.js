@@ -286,13 +286,12 @@
       AUTO.steady = 0; AUTO.seen = 0;
       return setAuto(f.edges > need && f.ring >= ringMax ? "Fit all 4 corners inside — nothing crossing the frame" : f.edges > need ? "Looking for the barcode…" : "Place a box label in the frame", 0);
     }
-    // A label is in the frame: take it as soon as it settles (~0.2 s), or after ~0.6 s whatever the movement.
-    AUTO.seen = (AUTO.seen || 0) + 1;
-    if (moving <= 14) AUTO.steady++; else AUTO.steady = 0;
-    const go = (AUTO.steady >= 1 && AUTO.seen >= 2) || AUTO.seen >= 4;
-    if (!go) return setAuto("Label found…", Math.max(AUTO.steady, AUTO.seen / 4));
+    // A whole label is in the frame: it must stay still for 1 full second (7 samples). Any movement starts the count again.
+    if (moving <= 10) AUTO.steady++; else AUTO.steady = 0;
+    const NEED = 7;
+    if (AUTO.steady < NEED) return setAuto(AUTO.steady ? "Hold still…" : "Label found — hold still", AUTO.steady / NEED);
     AUTO.steady = 0; AUTO.seen = 0; AUTO.armed = false; AUTO.last = f.grid;
-    setAuto("Capturing…", 1);
+    setAuto("Capturing — keep still", 1);
     shoot(true).then((ok) => { if (!ok) { AUTO.armed = true; AUTO.last = null; } });     // a rejected shot: try again, don't wait for a "next box"
   }
   function setAuto(text, progress) {
@@ -391,6 +390,16 @@
     sx = Math.max(0, sx); sy = Math.max(0, sy); sw = Math.min(vw - sx, sw); sh = Math.min(vh - sy, sh);
     return [sx, sy, sw, sh];
   }
+  /* Sharpness of a canvas, judged at 320 px (variance of the Laplacian). */
+  function sharpOf(cv) {
+    const k = 320 / Math.max(cv.width, cv.height), w = Math.max(8, Math.round(cv.width * k)), h = Math.max(8, Math.round(cv.height * k));
+    const t = document.createElement("canvas"); t.width = w; t.height = h; const g = t.getContext("2d", { willReadFrequently: true }); g.drawImage(cv, 0, 0, w, h);
+    const px = g.getImageData(0, 0, w, h).data, gr = new Float32Array(w * h);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) gr[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    let n = 0, s1 = 0, s2 = 0;
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) { const i = y * w + x, l = 4 * gr[i] - gr[i - 1] - gr[i + 1] - gr[i - w] - gr[i + w]; s1 += l; s2 += l * l; n++; }
+    return s2 / n - (s1 / n) ** 2;
+  }
   async function shootInner(v) {
     const vw = v.videoWidth, vh = v.videoHeight, r = v.getBoundingClientRect();
     const g = CAM.el.querySelector(".sb-cam-guide").getBoundingClientRect();
@@ -398,8 +407,14 @@
     const m = 0.025 * g.width;            // just a sliver of margin: the photo is what you saw in the frame
     let sx = (g.left - r.left - ox - m) / k, sy = (g.top - r.top - oy - m) / k, sw = (g.width + 2 * m) / k, sh = (g.height + 2 * m) / k;
     sx = Math.max(0, sx); sy = Math.max(0, sy); sw = Math.min(vw - sx, sw); sh = Math.min(vh - sy, sh);
-    const cv = document.createElement("canvas"); cv.width = Math.round(sw); cv.height = Math.round(sh);
-    cv.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+    // Anti-shake: grab 3 frames ~0.1 s apart and keep the sharpest.
+    let cv = null, best = -1;
+    for (let k = 0; k < 3; k++) {
+      if (k) await new Promise((r) => setTimeout(r, 100));
+      const c = document.createElement("canvas"); c.width = Math.round(sw); c.height = Math.round(sh);
+      c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      const q = sharpOf(c); if (q > best) { best = q; cv = c; }
+    }
     const bad = quality(cv, 400, 8, 320);         // only a truly smeared shot is rejected
     if (bad) { flash("⚠ " + bad.split(" — ")[0] + " — try again", true); return false; }
     const blob = await new Promise((res) => cv.toBlob(res, "image/jpeg", 0.93));
@@ -410,7 +425,9 @@
     try { await tx("readwrite", (st) => st.put({ key, blob, projectId, user, at: Date.now() })); }      // safe on the phone first
     catch (e) { kept = false; flash("⚠ Phone storage full — keep MYDAY open until these upload", true); }
     S.Q.items.unshift({ key, blob, thumb: URL.createObjectURL(blob), status: "waiting", msg: "", projectId, kept });
-    CAM.taken++; beep(); if (kept) flash("✓ " + CAM.taken); camCount(); pump();
+    CAM.taken++; camCount(); pump();
+    await new Promise((r) => setTimeout(r, 500));                 // ✓ and beep half a second after the photo
+    beep(); if (kept) flash("✓ " + CAM.taken);
     return true;
   }
 

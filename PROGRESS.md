@@ -917,6 +917,21 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested: wood → 0; boxes sliding over wood → 1 per box; cut-off label → 0
   with the corners prompt; empty → 0.
 
+### 17 October 2026 — auto-capture: 1 s of stillness, sharpest of 3, ✓ 0.5 s later
+- Capture only after the whole label (4 corners + barcode) has been still for
+  1 full second (7 samples at ~150 ms, movement ≤ 10 on the coarse grid);
+  any movement restarts the count ("Hold still…", ring fills over the second).
+- Anti-shake: at capture, 3 frames ~0.1 s apart are grabbed and the sharpest
+  (Laplacian variance at 320 px) is kept.
+- The ✓ and scanner beep come 0.5 s after the photo.
+- Measured: still label → photo at ~1.95 s, ✓ at ~2.42 s; shaking label → never.
+- NOTE: Claude's build workspace was reset before this change; the build
+  tooling (patch.py, build.sh, test mocks) was lost. This version was made by
+  editing myday-live/public/scanbox.js directly in the v63 package (app.js is
+  the already-patched bundle) and bumping MYDAY_BUILD + the script ?v in
+  index.html. Future changes: edit myday-live/ files directly; bump the build
+  number in index.html.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
