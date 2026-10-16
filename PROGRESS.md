@@ -932,6 +932,30 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   index.html. Future changes: edit myday-live/ files directly; bump the build
   number in index.html.
 
+### 17 October 2026 — every page has its own address
+- New `public/router.js` (loaded after app.js): keeps the URL and the page in
+  step — /today, /tasks, /calendar, /projects, /auctions, /captured-invoices,
+  /repair-devices, /scan-boxes, /development, /automation,
+  /automation/classic, /phone-news, /apple-trade-in, /notes, /goals, /habits,
+  /settings ("/" = Dashboard). Refresh stays on the page; Back/Forward work;
+  links can be bookmarked/shared; a link opened while signed out lands there
+  after sign-in. Tab title shows the page name. The server already serves
+  index.html for extension-less paths, so no server change.
+- Tested: click → URL, refresh, direct link, Back/Forward, signed-out link.
+
+### 17 October 2026 — every table: rows per page + column picker
+- New `public/tables.js` (loaded after router.js) enhances every table with a
+  header row (≥ 3 columns, not key/value drawers), including ones drawn later
+  (MutationObserver): **Rows** 20 (default) / 30 / 50 / 100 / 200 / 500 / 1000 /
+  2000 / 3000 with Prev/Next and "page X of Y · N rows"; **Columns ▾** to show
+  or hide columns (remembered per table and page, "Show all columns").
+  Settings in localStorage (myday_rows, myday_cols:*).
+- Repair Devices pages on its own: its page size now follows the same Rows
+  setting (default 20; `myday-rows` event), and the toolkit only adds Rows +
+  Columns there.
+- Tested on Scan Boxes (45 rows): 20 by default, Next, Rows 50, hide Colour,
+  both remembered after refresh.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

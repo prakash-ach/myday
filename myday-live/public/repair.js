@@ -9,7 +9,9 @@
   const PRI = { red: "Red — Highest", amber: "Amber — Medium", green: "Green — Stock OK", gray: "Gray — No sales", blue: "Blue — Presold", purple: "Purple — Review" };
   const PRI_ORDER = { red: 0, amber: 1, purple: 2, green: 3, gray: 4, blue: 5 };
   const FIN = { complete: "Complete economics", missingTotal: "Missing Total Cost", negative: "Negative spread", low: "Low margin" };
-  const PAGE = 50;
+  // Rows per page comes from the shared table setting (default 20).
+  let PAGE = (() => { try { const n = +JSON.parse(localStorage.getItem("myday_rows") || "20"); return n > 0 ? n : 20; } catch (e) { return 20; } })();
+  window.addEventListener("myday-rows", (e) => { PAGE = +e.detail || 20; S.page = { dev: 0, sku: 0 }; draw(); });
   const S = { host: null, data: null, err: "", loading: false, tab: "plan", f: blankF(), page: { dev: 0, sku: 0 },
     sort: { dev: { k: "priority", dir: 1 }, sku: { k: "priority", dir: 1 } }, skuScope: "all", drawer: null, upload: null, busy: "" };
   function blankF() { return { q: "", pri: "", wf: "", owner: "", bin: "", issue: "", fin: "", sku: "", cand: "" }; }
