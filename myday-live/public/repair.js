@@ -5,12 +5,12 @@
 (function () {
   "use strict";
   const ctx = () => window.__myday || null;
-  const TABS = [["overview", "Overview"], ["explorer", "Device Explorer"], ["skus", "SKU Priorities"], ["workflow", "Repair Workflow"], ["money", "Costs & Margins"], ["files", "Files & Data Quality"]];
+  const TABS = [["plan", "Action Plan"], ["overview", "Overview"], ["explorer", "Device Explorer"], ["skus", "SKU Priorities"], ["workflow", "Repair Workflow"], ["files", "Files & Data Quality"]];
   const PRI = { red: "Red — Highest", amber: "Amber — Medium", green: "Green — Stock OK", gray: "Gray — No sales", blue: "Blue — Presold", purple: "Purple — Review" };
   const PRI_ORDER = { red: 0, amber: 1, purple: 2, green: 3, gray: 4, blue: 5 };
   const FIN = { complete: "Complete economics", missingTotal: "Missing Total Cost", negative: "Negative spread", low: "Low margin" };
   const PAGE = 50;
-  const S = { host: null, data: null, err: "", loading: false, tab: "overview", f: blankF(), page: { dev: 0, sku: 0 },
+  const S = { host: null, data: null, err: "", loading: false, tab: "plan", f: blankF(), page: { dev: 0, sku: 0 },
     sort: { dev: { k: "priority", dir: 1 }, sku: { k: "priority", dir: 1 } }, skuScope: "all", drawer: null, upload: null, busy: "" };
   function blankF() { return { q: "", pri: "", wf: "", owner: "", bin: "", issue: "", fin: "", sku: "", cand: "" }; }
   const isCand = (d) => (d.wf === "Not mapped" || d.wf === "Waiting for repair") && !d.elig.length && !d.flags.includes("Duplicate identifier in this batch");
@@ -54,12 +54,6 @@
     if (f.issue && skip !== "issue" && !d.issues.includes(f.issue)) return false;
     if (f.sku && skip !== "sku" && d.sku !== f.sku) return false;
     if (f.cand && skip !== "cand" && !isCand(d)) return false;
-    if (f.fin && skip !== "fin") {
-      if (f.fin === "complete" && !(d.spread != null && d.money.selling > 0)) return false;
-      if (f.fin === "missingTotal" && d.money.total != null) return false;
-      if (f.fin === "negative" && !(d.spread != null && d.spread < 0)) return false;
-      if (f.fin === "low" && !d.lowMargin) return false;
-    }
     return true;
   }
   const devices = () => (S.data ? S.data.devices.filter((d) => devMatches(d, S.f)) : []);
@@ -77,8 +71,7 @@
   function setF(k, v, tab) { S.f[k] = S.f[k] === v ? "" : v; S.page = { dev: 0, sku: 0 }; if (tab) S.tab = tab; draw(); }
 
   /* ---------- sorting ---------- */
-  const devKey = { priority: (d) => [PRI_ORDER[d.priority], d.id], id: (d) => d.id, sku: (d) => d.sku, wf: (d) => d.wf, owner: (d) => d.owner, bin: (d) => normBin(d.bin),
-    total: (d) => d.money.total ?? -Infinity, selling: (d) => d.money.selling ?? -Infinity, spread: (d) => d.spread ?? -Infinity, margin: (d) => d.calcMargin ?? -Infinity };
+  const devKey = { priority: (d) => [PRI_ORDER[d.priority], d.id], id: (d) => d.id, sku: (d) => d.sku, wf: (d) => d.wf, owner: (d) => d.owner, bin: (d) => normBin(d.bin) };
   const cmp = (a, b) => (Array.isArray(a) ? (a[0] - b[0]) || String(a[1]).localeCompare(String(b[1])) : typeof a === "number" ? a - b : String(a).localeCompare(String(b), undefined, { numeric: true }));
   function sortDev(list) { const { k, dir } = S.sort.dev, f = devKey[k] || devKey.priority; return list.slice().sort((a, b) => cmp(f(a), f(b)) * dir || a.i - b.i); }
   const skuKey = { priority: null, sku: (s) => s.sku, monthly: (s) => s.monthly ?? -1, available: (s) => s.available ?? -1, coverage: (s) => s.coverage ?? 1e9, shortage: (s) => s.shortage ?? -1,
@@ -103,27 +96,50 @@
     const f = S.f, list = [];
     if (f.q) list.push(["q", `Search: "${f.q}"`]); if (f.pri) list.push(["pri", PRI[f.pri]]); if (f.wf) list.push(["wf", "Workflow: " + f.wf]);
     if (f.owner) list.push(["owner", "Owner: " + f.owner]); if (f.bin) list.push(["bin", "Bin: " + f.bin]); if (f.issue) list.push(["issue", "Issue: " + f.issue]);
-    if (f.fin) list.push(["fin", FIN[f.fin]]); if (f.sku) list.push(["sku", "SKU: " + f.sku]); if (f.cand) list.push(["cand", "Unassigned candidates only"]);
+    if (f.sku) list.push(["sku", "SKU: " + f.sku]); if (f.cand) list.push(["cand", "Unassigned candidates only"]);
     return list.length ? `<div class="rp-chips" aria-label="Active filters">${list.map(([k, l]) => `<span class="rp-chip">${esc(l)}<button data-unset="${k}" aria-label="Remove filter ${esc(l)}">✕</button></span>`).join("")}<button class="rp-link" data-clear>Clear filters</button></div>` : "";
-  }
-  function econ(list) {
-    const e = list.filter((d) => d.spread != null && d.money.selling > 0);
-    const s = (f) => e.reduce((n, d) => n + f(d), 0);
-    const cost = s((d) => d.money.total), sell = s((d) => d.money.selling), spread = s((d) => d.spread);
-    return { n: list.length, complete: e.length, missingTotal: list.filter((d) => d.money.total == null).length, cost, sell, spread, margin: sell > 0 ? (spread / sell) * 100 : null,
-      negative: list.filter((d) => d.spread != null && d.spread < 0).length, low: list.filter((d) => d.lowMargin).length };
   }
 
   /* ---------- tabs ---------- */
+  /* What to repair first, and what to buy. */
+  function plan() {
+    const K = skus().filter((s) => s.priority !== "purple" || s.repairNow > 0);
+    // Selling with NO stock first (highest sales first), then low stock by cover, then the rest.
+    const rank = (s) => (s.monthly > 0 && s.available === 0 ? 0 : s.priority === "red" ? 1 : s.priority === "amber" ? 2 : 3);
+    const rep = K.filter((s) => s.repairNow > 0).sort((a, b) => (rank(a) - rank(b)) || (rank(a) === 0 ? (b.monthly - a.monthly) : ((a.coverage ?? 1e9) - (b.coverage ?? 1e9))) || (b.repairNow - a.repairNow) || a.sku.localeCompare(b.sku));
+    const buy = K.filter((s) => s.buyQty > 0).sort((a, b) => (b.buyQty - a.buyQty) || ((b.daily || 0) - (a.daily || 0)));
+    const sum = (l, k) => l.reduce((n, s) => n + (s[k] || 0), 0);
+    const out = K.filter((s) => s.monthly > 0 && s.available === 0).length;
+    const bar = (v, max, cls) => `<span class="rp-mini"><i class="${cls}" style="width:${Math.min(100, (v / Math.max(1, max)) * 100)}%"></i></span>`;
+    const maxR = Math.max(1, ...rep.map((s) => s.repairNow)), maxB = Math.max(1, ...buy.map((s) => s.buyQty));
+    const rows = (list, kind) => list.slice(0, 40).map((s, i) => `<tr tabindex="0" data-sku="${esc(s.sku)}">
+        <td class="n rp-rank">${i + 1}</td><td><b>${esc(s.name || s.sku)}</b><small class="mono">${esc(s.sku)}</small></td><td>${badge(s.priority)}${s.monthly > 0 && s.available === 0 ? `<small class="rp-oos">selling · out of stock</small>` : ""}</td>
+        <td class="n rp-big">${kind === "rep" ? num(s.repairNow) : num(s.buyQty)}${bar(kind === "rep" ? s.repairNow : s.buyQty, kind === "rep" ? maxR : maxB, kind === "rep" ? "green" : "red")}</td>
+        <td class="n">${num(s.monthly)}<small>per ${S.data.settings.salesWindowDays} d</small></td><td class="n">${num(s.available)}<small>${s.coverage == null ? "—" : num(s.coverage, 1) + " d cover"}</small></td>
+        <td class="n">${num(s.pipeline)}<small>in pipeline</small></td><td class="n">${num(s.candidates)}<small>candidates</small></td>
+        <td class="n">${s.lastPurchaseDate ? esc(s.lastPurchaseDate.slice(0, 10)) : "—"}<small>last bought</small></td></tr>`).join("");
+    const head = (k) => `<thead><tr><th>#</th><th>Product</th><th>Priority</th><th class="n">${k}</th><th class="n">Sells</th><th class="n">In stock</th><th class="n">Pipeline</th><th class="n">Repairable</th><th class="n">Last bought</th></tr></thead>`;
+    return `<div class="rp-pcards">
+        <div class="rp-pcard green"><span>Repair now</span><b>${num(sum(rep, "repairNow"))}</b><small>units across ${rep.length} SKUs</small></div>
+        <div class="rp-pcard red"><span>Buy more</span><b>${num(sum(buy, "buyQty"))}</b><small>units across ${buy.length} SKUs</small></div>
+        <div class="rp-pcard amber"><span>Out of stock, selling</span><b>${num(out)}</b><small>SKUs</small></div>
+        <div class="rp-pcard blue"><span>Already moving</span><b>${num(sum(K, "pipeline"))}</b><small>in repair, processing or cleaning</small></div></div>
+      <div class="rp-panel"><h4>🔧 Repair first <small>— selling with no stock first (highest sales first), then low stock. Only SKUs you have devices to repair.</small></h4>
+        ${rep.length ? `<div class="rp-tablewrap"><table class="rp-table rp-plan">${head("Repair now")}<tbody>${rows(rep, "rep")}</tbody></table></div>${rep.length > 40 ? `<p class="rp-dim">Top 40 of ${rep.length} — all in SKU Priorities and the Excel export.</p>` : ""}` : `<p class="rp-dim">Nothing to repair for these filters.</p>`}</div>
+      <div class="rp-panel"><h4>🛒 Buy more <small>— sells, and still short after the pipeline and every repairable device.</small></h4>
+        ${buy.length ? `<div class="rp-tablewrap"><table class="rp-table rp-plan">${head("Buy")}<tbody>${rows(buy, "buy")}</tbody></table></div>${buy.length > 40 ? `<p class="rp-dim">Top 40 of ${buy.length} — all in the Excel export.</p>` : ""}` : `<p class="rp-dim">Nothing to buy for these filters.</p>`}</div>
+      <p class="rp-note">How it's worked out (provisional, from the assumptions in Files & Data Quality): target = ${S.data.settings.targetCoverDays} days of sales; shortage = target − in stock; devices already in repair, processing or cleaning count first; then repairable devices (Not mapped / Waiting for repair, no eligibility flags) = <b>Repair now</b>; whatever is still short = <b>Buy</b>. Click a row for its devices and catalog record.</p>`;
+  }
+
   function overview() {
-    const D = devices(), K = skus(), E = econ(D);
+    const D = devices(), K = skus();
     const wf = (w) => D.filter((d) => d.wf === w).length;
     const redCand = D.filter((d) => d.priority === "red" && isCand(d)).length;
     const byPri = facet("pri"), skuPriPool = (() => { const keep = S.f.pri; S.f.pri = ""; const l = skus(); S.f.pri = keep; return l; })();
     const priCards = ["red", "amber", "purple", "green", "gray", "blue"].map((k) => {
-      const l = byPri.filter((d) => d.priority === k), cost = l.reduce((n, d) => n + (d.money.total || 0), 0), sk = new Set(l.map((d) => d.sku)).size;
+      const l = byPri.filter((d) => d.priority === k), sk = new Set(l.map((d) => d.sku)).size;
       return `<button class="rp-pcard ${k} ${S.f.pri === k ? "on" : ""}" data-act="pri:${k}" aria-pressed="${S.f.pri === k}" aria-label="${esc(PRI[k])}: ${l.length} devices">
-        ${badge(k)}<b>${num(l.length)}</b><span>devices · ${num(sk)} SKU${sk === 1 ? "" : "s"}</span><small>${money(cost)} reported cost</small></button>`;
+        ${badge(k)}<b>${num(l.length)}</b><span>devices · ${num(sk)} SKU${sk === 1 ? "" : "s"}</span></button>`;
     }).join("");
     const stockouts = S.data.skus.filter((s) => s.priority === "red" && s.candidates === 0 && (!S.f.pri || S.f.pri === "red")).length;
     const issues = countBy(D.flatMap((d) => d.issues.map((x) => ({ x }))), (o) => o.x).slice(0, 10);
@@ -136,8 +152,6 @@
       ${card("Process & move + cleaning", num(wf("Process and Move") + wf("Cleaning")), `${num(wf("Process and Move"))} processing · ${num(wf("Cleaning"))} cleaning`, "wf:Process and Move")}
       ${card("Unassigned highest-priority", num(redCand), "red demand · not mapped or waiting for repair · no eligibility flags", "redcand", "red")}
       ${card("Waiting for repair", num(wf("Waiting for repair")), "Repair To Repair queue — not started", "wf:Waiting for repair")}
-      ${card("Reported cost exposure", money(E.cost), `${num(E.complete)} devices with complete economics`, "fin:complete")}
-      ${card("Missing Total Cost", num(E.missingTotal), `of ${num(E.n)} devices — spread unknown`, "fin:missingTotal", "purple")}
       ${card("Selling stockouts, no repair candidate", num(stockouts), "purchasing / substitution gap", "nocand", "red")}
     </div>
     <div class="rp-grid">
@@ -153,14 +167,13 @@
     const p = Math.min(S.page.dev, Math.max(0, Math.ceil(list.length / PAGE) - 1)), rows = sortDev(list).slice(p * PAGE, p * PAGE + PAGE);
     return `<div class="rp-tablewrap"><table class="rp-table"><thead><tr>
       ${th("dev", "id", "IMEI / serial")}${th("dev", "sku", "SKU · product")}${th("dev", "priority", "Priority")}${th("dev", "wf", "Workflow")}${th("dev", "owner", "Owner / route")}
-      <th>Next action</th>${th("dev", "bin", "Bin")}<th>Reasons</th>${th("dev", "total", "Total cost", "n")}${th("dev", "selling", "Selling", "n")}${th("dev", "spread", "Spread", "n")}${th("dev", "margin", "Margin", "n")}
+      <th>Next action</th>${th("dev", "bin", "Bin")}<th>Reasons</th>
       </tr></thead><tbody>${rows.map((d) => `<tr tabindex="0" data-dev="${d.i}" aria-label="Open device ${esc(d.id || "(no id)")}">
         <td class="mono">${esc(d.id || "(none)")}${d.idKind !== "IMEI" ? `<small>${esc(d.idKind)}</small>` : ""}</td>
         <td><span class="mono">${esc(d.sku)}</span><small>${esc(d.name)}</small></td><td>${badge(d.priority)}${d.priority !== d.demand && d.priority !== "blue" ? `<small>SKU demand: ${esc(PRI[d.demand])}</small>` : ""}</td>
         <td>${esc(d.wf)}${d.doneMonth ? `<small>done month ${d.doneMonth}</small>` : ""}${d.conflicts.length ? `<small class="warn">⚠ conflict</small>` : ""}</td><td>${esc(d.owner)}</td><td><small>${esc(d.action)}</small></td>
-        <td>${esc(normBin(d.bin) || "—")}</td><td><small>${esc(d.reason || "—")}</small>${d.elig.length ? `<small class="warn">${esc(d.elig.join(", "))}</small>` : ""}</td>
-        <td class="n">${money(d.money.total)}</td><td class="n">${money(d.money.selling)}</td><td class="n ${d.spread < 0 ? "neg" : ""}">${money(d.spread)}</td><td class="n">${pct(d.calcMargin)}</td></tr>`).join("")
-        || `<tr><td colspan="12" class="rp-empty">No devices match these filters.</td></tr>`}</tbody></table></div>${pager("dev", list.length, p)}`;
+        <td>${esc(normBin(d.bin) || "—")}</td><td><small>${esc(d.reason || "—")}</small>${d.elig.length ? `<small class="warn">${esc(d.elig.join(", "))}</small>` : ""}</td></tr>`).join("")
+        || `<tr><td colspan="8" class="rp-empty">No devices match these filters.</td></tr>`}</tbody></table></div>${pager("dev", list.length, p)}`;
   }
   const pager = (t, n, p) => { const pages = Math.max(1, Math.ceil(n / PAGE)); return `<div class="rp-pager"><span>${num(n)} ${t === "dev" ? "devices" : "SKUs"} · page ${p + 1} of ${pages}</span>
     <button data-page="${t}:0" ${p === 0 ? "disabled" : ""}>« First</button><button data-page="${t}:${p - 1}" ${p === 0 ? "disabled" : ""}>‹ Prev</button>
@@ -174,7 +187,6 @@
       <label>Priority<select data-f="pri"><option value="">All</option>${Object.keys(PRI).map((k) => `<option value="${k}" ${S.f.pri === k ? "selected" : ""}>${PRI[k]}</option>`).join("")}</select></label>
       ${opt("wf", countBy(base("wf"), (d) => d.wf), "Workflow")}${opt("owner", countBy(base("owner"), (d) => d.owner), "Owner / technician")}
       ${opt("bin", countBy(base("bin"), (d) => normBin(d.bin) || "(blank)").slice(0, 400), "Bin")}${opt("issue", countBy(base("issue").flatMap((d) => d.issues.map((x) => ({ x }))), (o) => o.x).slice(0, 300), "Issue")}
-      <label>Financial<select data-f="fin"><option value="">All</option>${Object.entries(FIN).map(([k, l]) => `<option value="${k}" ${S.f.fin === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     </div>${devTable(D)}`;
   }
 
@@ -185,12 +197,11 @@
       ${deviceFilterOn() ? `<p class="rp-note">Showing SKUs that have devices matching your device filters. Sales, stock and repair counts in this table are for the <b>whole SKU</b>, not just the filtered devices.</p>` : ""}
       <div class="rp-tablewrap"><table class="rp-table"><thead><tr>${th("sku", "sku", "SKU · product")}${th("sku", "priority", "Priority")}${th("sku", "monthly", "Monthly / weekly", "n")}
       ${th("sku", "available", "Available", "n")}<th>Stock pairs (original)</th>${th("sku", "coverage", "Coverage days", "n")}<th class="n">Target</th>${th("sku", "shortage", "Shortage", "n")}
-      ${th("sku", "repairDevices", "Repair devices", "n")}<th>By workflow</th>${th("sku", "candidates", "Candidates", "n")}${th("sku", "limit", "Provisional limit", "n")}<th class="n">Catalog price · cost · margin</th><th>Why</th></tr></thead>
+      ${th("sku", "repairDevices", "Repair devices", "n")}<th>By workflow</th>${th("sku", "candidates", "Candidates", "n")}${th("sku", "limit", "Provisional limit", "n")}<th>Why</th></tr></thead>
       <tbody>${rows.map((s) => `<tr tabindex="0" data-sku="${esc(s.sku)}" aria-label="Open SKU ${esc(s.sku)}"><td><span class="mono">${esc(s.sku)}</span><small>${esc(s.name || "—")}</small></td><td>${badge(s.priority)}</td>
         <td class="n">${num(s.monthly)} / ${num(s.weekly)}<small>${esc(s.monthlySource)}</small></td><td class="n">${num(s.available)}<small>${esc(s.availSource)}</small></td>
         <td><small>${esc(s.stockSegments.map((g) => `${g.warehouse} ${g.a}/${g.b}`).join(" · ") || "—")}</small></td><td class="n">${s.coverage == null ? "—" : num(s.coverage, 1)}</td><td class="n">${num(s.target)}</td><td class="n">${num(s.shortage)}</td>
-        <td class="n">${num(s.repairDevices)}</td><td><small>${esc(Object.entries(s.byWf).map(([w, n]) => `${w} ${n}`).join(" · ") || "—")}</small></td><td class="n">${num(s.candidates)}</td><td class="n">${num(s.limit)}</td>
-        <td class="n">${money(s.price)}<small>${money(s.cost)} · ${pct(s.marginSrc)}</small></td><td><small>${esc(s.why)}</small></td></tr>`).join("") || `<tr><td colspan="14" class="rp-empty">No SKUs match.</td></tr>`}</tbody></table></div>
+        <td class="n">${num(s.repairDevices)}</td><td><small>${esc(Object.entries(s.byWf).map(([w, n]) => `${w} ${n}`).join(" · ") || "—")}</small></td><td class="n">${num(s.candidates)}</td><td class="n">${num(s.limit)}</td><td><small>${esc(s.why)}</small></td></tr>`).join("") || `<tr><td colspan="13" class="rp-empty">No SKUs match.</td></tr>`}</tbody></table></div>
       ${pager("sku", K.length, p)}<p class="rp-dim">Provisional limit = min(assessment candidates, shortage). It's a ceiling to look at, not a work order. Inbound and allocated repair completions aren't in these files, so they're not subtracted.</p>`;
   }
 
@@ -205,23 +216,6 @@
       <h3 class="rp-h">${S.f.wf ? esc(S.f.wf) : "All devices"} <small>— click a queue above to narrow</small></h3>${devTable(D)}`;
   }
 
-  function moneyTab() {
-    const D = devices(), E = econ(D), cov = E.n ? Math.round((E.complete / E.n) * 100) : 0;
-    const group = (key) => { const g = new Map(); for (const d of D) { const k = key(d) || "—"; const x = g.get(k) || []; x.push(d); g.set(k, x); } return [...g.entries()].map(([k, l]) => ({ k, ...econ(l) })).sort((a, b) => b.cost - a.cost); };
-    const gtable = (title, rows, act) => `<div class="rp-panel"><h4>${esc(title)}</h4><div class="rp-tablewrap"><table class="rp-table small"><thead><tr><th></th><th class="n">Devices</th><th class="n">Complete</th><th class="n">Missing total</th><th class="n">Reported cost</th><th class="n">Selling (same)</th><th class="n">Spread</th><th class="n">Weighted margin</th><th class="n">Negative</th></tr></thead>
-      <tbody>${rows.slice(0, 25).map((r) => `<tr tabindex="0" data-act="${esc(act + ":" + r.k)}"><td>${esc(r.k)}</td><td class="n">${num(r.n)}</td><td class="n">${num(r.complete)}</td><td class="n">${num(r.missingTotal)}</td><td class="n">${money(r.cost)}</td><td class="n">${money(r.sell)}</td><td class="n ${r.spread < 0 ? "neg" : ""}">${money(r.spread)}</td><td class="n">${pct(r.margin)}</td><td class="n">${num(r.negative)}</td></tr>`).join("")}</tbody></table></div></div>`;
-    return `<div class="rp-filters">${Object.entries(FIN).map(([k, l]) => `<button class="rp-tog ${S.f.fin === k ? "on" : ""}" data-act="fin:${k}">${esc(l)}</button>`).join("")}</div>
-      <div class="rp-cards">
-        ${card("Devices with complete economics", num(E.complete), `of ${num(E.n)} (${cov}%) — the population for the totals below`)}
-        ${card("Reported total cost", money(E.cost), `${num(E.complete)} devices`)}${card("Selling value", money(E.sell), `same ${num(E.complete)} devices`)}
-        ${card("Recorded spread", money(E.spread), `same ${num(E.complete)} devices — not forecast profit`)}${card("Weighted margin", pct(E.margin), "total spread ÷ matched selling value")}
-        ${card("Missing Total Cost", num(E.missingTotal), `of ${num(E.n)} — spread unknown`, "fin:missingTotal", "purple")}
-        ${card("Negative spread", num(E.negative), "devices", "fin:negative", "red")}${card(`Low margin (< ${S.data.settings.lowMarginPct}%)`, num(E.low), "devices", "fin:low", "amber")}
-      </div>
-      <p class="rp-note">Recorded spread = selling price − reported Total Cost, only where both exist. Missing Total Cost isn't replaced with purchase price. Future parts, labour, fees, returns and actual sale prices aren't in these files, so this isn't a profit forecast.</p>
-      <div class="rp-grid">${gtable("By workflow", group((d) => d.wf), "wf")}${gtable("By owner / technician", group((d) => d.owner), "owner")}${gtable("By SKU (top 25 by cost)", group((d) => d.sku), "sku")}</div>
-      <h3 class="rp-h">Devices</h3>${devTable(D)}`;
-  }
 
   function files() {
     const d = S.data, st = S.state || {};
@@ -247,7 +241,7 @@
   function settingsForm() {
     const s = (S.state && S.state.settings) || {};
     const n = (k, l, min, max) => `<label>${l}<input type="number" min="${min}" max="${max}" data-set="${k}" value="${esc(s[k])}"></label>`;
-    return `<div class="rp-filters">${n("salesWindowDays", "Sales window (days)", 1, 366)}${n("lowStockDays", "Low stock under (days)", 0, 365)}${n("targetCoverDays", "Target cover (days)", 1, 365)}${n("lowMarginPct", "Low margin under (%)", -100, 100)}
+    return `<div class="rp-filters">${n("salesWindowDays", "Sales window (days)", 1, 366)}${n("lowStockDays", "Low stock under (days)", 0, 365)}${n("targetCoverDays", "Target cover (days)", 1, 365)}
       <label>Availability warehouse<input data-set="availabilityWarehouse" value="${esc(s.availabilityWarehouse)}"></label>
       <label>Use which number of the pair<select data-set="availabilityQuantity"><option value="first" ${s.availabilityQuantity === "first" ? "selected" : ""}>First (provisional)</option><option value="second" ${s.availabilityQuantity === "second" ? "selected" : ""}>Second</option></select></label>
       <label>Catalog exports are<select data-set="completeness"><option value="incomplete" ${s.completeness !== "complete" ? "selected" : ""}>Incomplete — absent stays unknown</option><option value="complete" ${s.completeness === "complete" ? "selected" : ""}>Complete positive-only — absent = none</option></select></label>
@@ -281,9 +275,7 @@
         ${d.elig.length ? `<p class="warn">Eligibility evidence: ${d.elig.map(esc).join(", ")}</p>` : ""}
         ${d.wf === "Give to Bibek" ? `<p><button class="rp-pri-btn" data-handoff="${esc(d.id)}">Record handoff to Bibek</button> <span class="rp-dim">Only when he actually has it.</span></p>` : ""}
         ${d.wf === "With Bibek" ? `<p><button class="rp-link" data-unhandoff="${esc(d.id)}">Undo recorded handoff</button></p>` : ""}
-        <h4>Derived</h4>${kv({ "ID type": d.idKind, SKU: d.sku, "Demand priority (SKU)": PRI[d.demand], "Issues": d.issues.join(", "), "Purchase price": money(d.money.purchase), "Additional cost": money(d.money.additional),
-          "Repair / labor / other": money(d.money.repair), "Total cost (reported)": money(d.money.total), "Selling price": money(d.money.selling), "Source margin %": pct(d.money.marginSrc),
-          "Recorded spread": money(d.spread), "Calculated margin": pct(d.calcMargin), Missing: d.missing.join(", ") || "none" })}
+        <h4>Derived</h4>${kv({ "ID type": d.idKind, SKU: d.sku, "Demand priority (SKU)": PRI[d.demand], "Issues": d.issues.join(", ") })}
         ${D.sku ? `<h4>SKU ${esc(D.sku.sku)}</h4><p>${badge(D.sku.priority)} ${esc(D.sku.why)}</p>` : ""}
         <h4>Original repair record <small>${esc(D.original.file)} · line ${D.original.line} (record ${D.original.record})</small></h4>${kv(D.original.data)}
         ${D.catalog.map((x) => `<h4>Catalog — ${esc(x.role)}${x.duplicate ? " (duplicate row)" : ""} <small>${esc(x.file)} · line ${x.line}</small></h4>${kv(x.data)}`).join("") || `<p class="rp-dim">This SKU isn't in either catalog.</p>`}`;
@@ -291,9 +283,8 @@
       const s = D.sku; title = s.sku;
       body = `<p>${badge(s.priority)} ${esc(s.why)}</p><p>${esc(s.name || "")}</p>
         ${kv({ "Monthly sale": num(s.monthly) + " (" + s.monthlySource + ")", "Weekly sale": num(s.weekly), Available: num(s.available) + " (" + s.availSource + ")", "Stock Summary": s.stockRaw,
-          "Coverage days": s.coverage == null ? "undefined" : num(s.coverage, 1), Target: num(s.target), Shortage: num(s.shortage), "Assessment candidates": num(s.candidates), "Provisional limit": num(s.limit),
-          "Catalog price": money(s.price), "Catalog cost": money(s.cost), "Catalog margin": pct(s.marginSrc), Currency: s.currency })}
-        <h4>Devices (${D.devices.length})</h4>${D.devices.length ? `<div class="rp-tablewrap"><table class="rp-table small"><tbody>${D.devices.map((d) => `<tr tabindex="0" data-dev="${d.i}"><td class="mono">${esc(d.id)}</td><td>${esc(d.wf)}</td><td>${esc(d.owner)}</td><td class="n">${money(d.money.total)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="rp-dim">No repair devices on this SKU.</p>`}
+          "Coverage days": s.coverage == null ? "undefined" : num(s.coverage, 1), Target: num(s.target), Shortage: num(s.shortage), "Already moving": num(s.pipeline), "Repairable candidates": num(s.candidates), "Repair now": num(s.repairNow), "Buy": num(s.buyQty) })}
+        <h4>Devices (${D.devices.length})</h4>${D.devices.length ? `<div class="rp-tablewrap"><table class="rp-table small"><tbody>${D.devices.map((d) => `<tr tabindex="0" data-dev="${d.i}"><td class="mono">${esc(d.id)}</td><td>${esc(d.wf)}</td><td>${esc(d.owner)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="rp-dim">No repair devices on this SKU.</p>`}
         ${D.catalog.map((x) => `<h4>Catalog — ${esc(x.role)}${x.duplicate ? " (duplicate row)" : ""} <small>${esc(x.file)} · line ${x.line}</small></h4>${kv(x.data)}`).join("") || `<p class="rp-dim">Not in either catalog.</p>`}`;
     }
     el.innerHTML = `<aside class="rp-drawer ${c && c.isDark === false ? "light" : "dark"}" role="dialog" aria-label="Details" style="--a:${(c && c.accent) || "#2FBF87"}">
@@ -375,7 +366,7 @@
   /* ---------- export ---------- */
   async function exportXlsx() {
     S.busy = "Building the Excel file…"; draw();
-    const f = S.f, filters = { search: f.q, priority: f.pri && PRI[f.pri], workflow: f.wf, owner: f.owner, bin: f.bin, issue: f.issue, financial: f.fin && FIN[f.fin], sku: f.sku, "SKU list": S.skuScope !== "all" ? S.skuScope : "" };
+    const f = S.f, filters = { search: f.q, priority: f.pri && PRI[f.pri], workflow: f.wf, owner: f.owner, bin: f.bin, issue: f.issue, sku: f.sku, "SKU list": S.skuScope !== "all" ? S.skuScope : "" };
     try {
       const r = await fetch("/api/repair/export", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
         body: JSON.stringify({ devices: devices().map((d) => d.i), skus: skus().map((s) => s.sku), filters }) });
@@ -396,7 +387,7 @@
     if (S.loading && !S.data) inner = `<p class="rp-dim">Loading Repair Devices…</p>`;
     else if (S.err) inner = `<p class="warn">${esc(S.err)}</p>`;
     else if (!S.data && S.tab !== "files") inner = `<div class="rp-panel"><h4>No repair batch yet</h4><p class="rp-dim">Upload the repair-stock file and the two catalog exports to begin.</p><button class="rp-pri-btn" data-upload>⬆ Upload files</button></div>`;
-    else inner = { overview, explorer, skus: skuTab, workflow, money: moneyTab, files }[S.tab]();
+    else inner = { plan, overview, explorer, skus: skuTab, workflow, files }[S.tab]();
     S.host.innerHTML = `<div class="rp ${c && c.isDark === false ? "light" : "dark"}" style="--a:${acc}">
       <div class="rp-top"><div><h1>Repair Devices</h1><p class="rp-dim">${S.data ? `Batch ${esc(S.data.batch.id)} · ${num(S.data.devices.length)} devices · ${num(S.data.skus.length)} SKUs · sales window ${S.data.settings.salesWindowDays} d, target ${S.data.settings.targetCoverDays} d (assumptions)` : "Repair stock, sales and inventory — one view"}</p></div>
         <div class="rp-actions"><input class="rp-search" type="search" placeholder="Search IMEI/serial, SKU, product, reason, notes" aria-label="Search" value="${esc(S.f.q)}" data-q>
@@ -462,6 +453,9 @@
   .rp-card:disabled{cursor:default}.rp-card:not(:disabled):hover{border-color:var(--a)}.rp-card small{display:block;color:var(--faint);font-size:11px}.rp-card b{display:block;font-size:21px}.rp-card span{display:block;color:var(--muted);font-size:11.5px}
   .rp-card.red{border-left:3px solid #F2545B}.rp-card.blue{border-left:3px solid #4C8DF6}.rp-card.purple{border-left:3px solid #A06CF0}.rp-card.amber{border-left:3px solid #F5C542}
   .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
+  .rp-plan td{vertical-align:middle}.rp-oos{color:#F2545B !important;font-weight:700}.rp-rank{color:var(--faint);width:28px}.rp-big{font-size:18px;font-weight:800;min-width:110px}
+  .rp-mini{display:block;height:5px;background:var(--chip);border-radius:3px;margin-top:4px;overflow:hidden}.rp-mini i{display:block;height:100%;border-radius:3px}
+  .rp-mini i.green{background:#22C55E}.rp-mini i.red{background:#F2545B}
   .rp-pcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-bottom:14px}
   .rp-pcard{text-align:left;border:1px solid var(--line);background:var(--card);border-radius:16px;padding:14px 16px;cursor:pointer;border-top:4px solid var(--c);min-height:118px;
     display:flex;flex-direction:column;gap:3px;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);transition:transform .15s,box-shadow .15s}

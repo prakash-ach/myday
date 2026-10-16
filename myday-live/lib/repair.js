@@ -404,6 +404,14 @@ function model(dir) {
     // Repair pipeline for this SKU.
     s.candidates = s.devices.filter((i) => CANDIDATE_WF.has(devices[i].wf) && !devices[i].elig.length && !devices[i].flags.includes("Duplicate identifier in this batch")).length;
     s.limit = s.shortage != null ? Math.min(s.candidates, s.shortage) : null;
+    /* Action plan (provisional): devices already moving towards sale count first,
+       then repair candidates, and what's still short is to buy. */
+    s.pipeline = (s.byWf["Repair in Progress"] || 0) + (s.byWf["Process and Move"] || 0) + (s.byWf["Cleaning"] || 0);
+    const afterPipe = s.shortage != null ? Math.max(0, s.shortage - s.pipeline) : null;
+    s.repairNow = afterPipe != null ? Math.min(s.candidates, afterPipe) : null;
+    s.buyQty = afterPipe != null ? Math.max(0, afterPipe - s.candidates) : null;
+    s.lastPurchaseDate = ec ? ec.data["Last Purchase Date"] || "" : "";
+    s.lastPurchaseAmount = ec ? num(ec.data["Last Purchase Order Amount"]) : null;
     s.repairDevices = s.devices.length;
   }
   // Device display priority: Blue for presold, Purple for review, else its SKU's demand priority.
@@ -462,10 +470,15 @@ const fmt = (x) => (x == null ? "—" : String(Math.round(x * 100) / 100));
 const fmt1 = (x) => (x == null ? "—" : (Math.round(x * 10) / 10).toFixed(1));
 
 /* What the browser gets: everything except the bulky original records (fetched per device). */
+/* Money isn't shown in Repair Devices: prices, costs and margins are stripped
+   before anything leaves the server (screen, drawer, export). */
+const MONEY_FIELDS = new Set(["Purchase Price","Additional Cost","Repair / Labor /<br/>Others","Total Cost","Selling Price","Margin %","Price","Cost","Margin(%)","Currency Code","Last Purchase Order Amount"]);
+const noMoney = (o) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => !MONEY_FIELDS.has(k)));
 function clientView(m) {
   if (!m) return null;
   const { raw, ...rest } = m;
-  return { ...rest, devices: m.devices.map((d) => ({ ...d, name: raw.repair[d.rec - 1].Name || "", bin: raw.repair[d.rec - 1]["Bin Location"] || "",
+  const skus = m.skus.map(({ price, cost, marginSrc, currency, lastPurchaseAmount, ...s }) => s);
+  return { ...rest, skus, quality: m.quality.filter((q) => q.area !== "Costs"), devices: m.devices.map(({ money, spread, calcMargin, missing, lowMargin, ...d }) => ({ ...d, name: raw.repair[d.rec - 1].Name || "", bin: raw.repair[d.rec - 1]["Bin Location"] || "",
     assignedTo: raw.repair[d.rec - 1]["Assigned To"] || "", reason: raw.repair[d.rec - 1].Reason || "", notes: raw.repair[d.rec - 1].Notes || "" })) };
 }
 /* One device, with its complete original record and matching catalog rows. */
@@ -477,7 +490,10 @@ function deviceDetail(m, i) {
     if (p[role]) cat.push({ role, file: p[role].file, line: p[role].line, record: p[role].rec, data: p[role].data });
     for (const x of p["dup_" + role] || []) cat.push({ role, file: x.file, line: x.line, record: x.rec, data: x.data, duplicate: true });
   }
-  return { device: d, original: { file: m.raw.files.repair, line: d.line, record: d.rec, data: m.raw.repair[d.rec - 1] }, catalog: cat, sku: m.skus.find((s) => s.sku === d.sku) || null };
+  const { money, spread, calcMargin, missing, lowMargin, ...dev } = d;
+  const sk = m.skus.find((s) => s.sku === d.sku);
+  return { device: dev, original: { file: m.raw.files.repair, line: d.line, record: d.rec, data: noMoney(m.raw.repair[d.rec - 1]) },
+    catalog: cat.map((c) => ({ ...c, data: noMoney(c.data) })), sku: sk ? (({ price, cost, marginSrc, currency, lastPurchaseAmount, ...s }) => s)(sk) : null };
 }
 
-module.exports = { parseCsv, inspect, validate, saveBatch, activate, batches, activeId, settings, saveSettings, overrides, setOverride, model, clientView, deviceDetail, num, parseStock, classify, DEFAULT_SETTINGS, WORKFLOW_ORDER };
+module.exports = { noMoney, parseCsv, inspect, validate, saveBatch, activate, batches, activeId, settings, saveSettings, overrides, setOverride, model, clientView, deviceDetail, num, parseStock, classify, DEFAULT_SETTINGS, WORKFLOW_ORDER };

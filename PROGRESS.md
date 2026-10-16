@@ -780,6 +780,31 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   filling the queue the third user's button locked at 6/6; all unlocked ~4 s
   after it drained; held photos sent afterwards.
 
+### 16 October 2026 — Repair Devices: Action Plan (what to repair first, what to buy)
+- New first tab **Action Plan**: cards (Repair now units/SKUs, Buy more
+  units/SKUs, out-of-stock-and-selling SKUs, already moving) and two ranked
+  lists. Per SKU (provisional, from the settings' assumptions):
+  pipeline = Repair in Progress + Process and Move + Cleaning;
+  after pipeline = max(0, shortage − pipeline);
+  repairNow = min(repair candidates, after pipeline); buyQty = after pipeline −
+  repairNow. Checked on the real snapshot: repair + buy + pipeline used =
+  shortage for every SKU. Snapshot: 756 units to repair (268 SKUs), 2,755 to
+  buy (649 SKUs); top buys iPad 8 (462) and iPad 7 (444).
+- "Repair first" ranked by priority, then coverage, then quantity; "Buy more"
+  by quantity, with catalog cost and last purchase date/amount. Rows open the
+  SKU drawer. Excel export gains "Repair first" and "Buy more" sheets.
+
+### 16 October 2026 — Repair Devices: no money; selling stock-outs repaired first
+- Prakash doesn't want money in Repair Devices: prices, costs, spreads and
+  margins are stripped server-side before anything reaches the screen,
+  drawers (original/catalog records shown without money fields), SKU route or
+  the Excel export (Costs sheets and money columns removed). Costs & Margins
+  tab, money cards/filters/sorts and the low-margin setting removed.
+- Repair first order: selling with zero stock first (highest monthly sales
+  first), then Red low-stock by coverage, then Amber; rows show "selling · out
+  of stock". Same rule as the original requirement, made explicit.
+- Checked: every tab, the device drawer and the export contain no money.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

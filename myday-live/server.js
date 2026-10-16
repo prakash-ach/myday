@@ -1079,7 +1079,8 @@ const server = http.createServer(async (req, res) => {
           if (pr[role]) cat.push({ role, file: pr[role].file, line: pr[role].line, record: pr[role].rec, data: pr[role].data });
           for (const x of pr["dup_" + role] || []) cat.push({ role, file: x.file, line: x.line, record: x.rec, data: x.data, duplicate: true });
         }
-        return json(res, 200, { sku: m.skus.find((x) => x.sku === k) || null, catalog: cat });
+        const sk = m.skus.find((x) => x.sku === k);
+        return json(res, 200, { sku: sk ? (({ price, cost, marginSrc, currency, lastPurchaseAmount, ...x }) => x)(sk) : null, catalog: cat.map((c) => ({ ...c, data: repair.noMoney(c.data) })) });
       }
       if (p === "/api/repair/inspect" && req.method === "POST") {
         const files = filesFrom(await readBody());
