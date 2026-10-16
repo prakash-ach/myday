@@ -144,8 +144,11 @@
     it.msg = `${j.saved} saved${j.duplicates ? ` · ${j.duplicates} duplicate${j.duplicates === 1 ? "" : "s"} skipped` : ""}`;
     // 3) close-up re-reads, each retried the same way.
     const W = it.img.naturalWidth, H = it.img.naturalHeight;
-    const needs = (j.boxes || []).filter((b) => b.box && (b.pending || (b.rowId && (!luhn(digits(b.imei1)) || (b.imei2 && !luhn(digits(b.imei2))) || !b.serial || (b.rotation && (b.confidence || 0) < 0.8)))));
+    const name = (b) => `${[b.brand, b.model, b.colour].filter(Boolean).join(" ") || "a box"}${b.position ? " (" + b.position + ")" : ""}`;
     const retakeBoxes = [];
+    // A box that needs a close-up but has no position can't be cut out: ask for a close-up photo of it — never drop it.
+    for (const b of (j.boxes || [])) if (b.pending && !b.box) retakeBoxes.push(name(b));
+    const needs = (j.boxes || []).filter((b) => b.box && (b.pending || (b.rowId && (!luhn(digits(b.imei1)) || (b.imei2 && !luhn(digits(b.imei2))) || !b.serial || (b.rotation && (b.confidence || 0) < 0.8)))));
     if (needs.length) { it.msg += ` · re-reading ${needs.length} up close…`; draw(); }
     let fixed = 0;
     await Promise.all(needs.map(async (b) => {
@@ -158,7 +161,7 @@
         const r = await steady("/api/scanbox/reread", { photoId: j.photoId, box: data, image, projectId }, null);
         if (r.ok && r.j.saved) { it.saved++; S.Q.saved++; fixed++; }
         else if (r.ok && r.j.duplicate) { it.dups++; S.Q.dups++; }
-        else retakeBoxes.push(`${[b.brand, b.model].filter(Boolean).join(" ") || "a box"}${b.position ? " (" + b.position + ")" : ""}`);
+        else retakeBoxes.push(name(b));
         return;
       }
       const r = await steady("/api/scanbox/reread", { id: b.rowId, image }, null);
@@ -166,8 +169,11 @@
       else if (r.ok && r.j.changed) fixed++;
     }));
     if (needs.length) { it.msg = `${it.saved} saved${it.dups ? ` · ${it.dups} duplicate${it.dups === 1 ? "" : "s"} skipped` : ""} · ${fixed} of ${needs.length} fixed up close`; S.Q.fixed += fixed; }
+    // The whole photo, accounted for: found = saved + duplicates + close-up needed.
+    const found = (j.boxes || []).length;
+    it.msg = `${found} box${found === 1 ? "" : "es"} found · ${it.saved} saved${it.dups ? ` · ${it.dups} duplicate${it.dups === 1 ? "" : "s"}` : ""}${retakeBoxes.length ? ` · ${retakeBoxes.length} need a close-up` : ""}${fixed ? ` · ${fixed} fixed up close` : ""}`;
     // Boxes still without an IMEI or serial: ask for a close-up photo of just that box.
-    if (retakeBoxes.length) S.Q.items.unshift({ key: it.key + "-rt", status: "retake", thumb: it.thumb, msg: `Take a close-up of ${retakeBoxes.join(", ")} — its IMEI/serial couldn't be read (not saved)` });
+    if (retakeBoxes.length) S.Q.items.unshift({ key: it.key + "-rt", status: "retake", thumb: it.thumb, msg: `Take a close-up of ${retakeBoxes.join(", ")} — ${retakeBoxes.length === 1 ? "its IMEI/serial" : "their IMEIs/serials"} couldn't be read (not saved yet)` });
   }
   /* The buttons live on <body>, so "fixed" means the screen, not the page content. */
   let fabHost = null;

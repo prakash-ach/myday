@@ -805,6 +805,16 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   of stock". Same rule as the original requirement, made explicit.
 - Checked: every tab, the device drawer and the export contain no money.
 
+### 16 October 2026 — fix: boxes silently missing from a photo
+- 5 photos × 4 phones gave 4 rows. Cause: boxes without a readable IMEI/serial
+  wait for a close-up, which needs the box's position; if the AI gave no
+  position the box was skipped with no message. Now such boxes go straight to
+  the named Retake list; the AI is told a position is required for every box
+  and to return every box it sees. Each photo's line accounts for every box:
+  "N found · saved · duplicates · need a close-up · fixed up close".
+- Tested: 4-box photo with 3 unreadable, position-less boxes → 1 saved, the 3
+  named in Retake.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
