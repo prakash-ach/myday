@@ -842,6 +842,17 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   one browser's 6-connection limit, so server-side sampling lagged; real phones
   each have their own.)
 
+### 16 October 2026 — Scan Boxes camera: rectangle frame, stable
+- Guide is a 16:10 rectangle (per-box label), everything outside it black, so
+  only what will be captured is visible; the photo is cropped to the frame
+  with a 2.5% margin. Landscape phones get a height-based frame.
+- Stability: shutter disabled until the stream is ready (loadedmetadata +
+  play); one capture at a time (busy flag — no double shots); camera stops when
+  the app is hidden and restarts on return; a track that ends is reconnected;
+  phone storage failure is reported and the photo still queued for the session.
+- Tested: disabled-until-ready, frame 373×235, saved photo 712×462 (same
+  shape), double-tap → 1 photo, rapid taps → each saved and processing.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

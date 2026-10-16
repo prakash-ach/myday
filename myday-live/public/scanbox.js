@@ -224,29 +224,52 @@
 
   /* ---------- the MYDAY camera: live view, square guide, tap tap tap ---------- */
   const CAM = { el: null, stream: null, video: null, taken: 0, torch: false };
+  async function startStream() {
+    CAM.ready = false; setShutter();
+    if (CAM.stream) CAM.stream.getTracks().forEach((t) => t.stop());
+    CAM.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 4096 }, height: { ideal: 3072 } } });
+    if (!CAM.video) return;
+    CAM.video.srcObject = CAM.stream;
+    await new Promise((res) => { if (CAM.video.readyState >= 2 && CAM.video.videoWidth) return res(); CAM.video.onloadedmetadata = () => res(); setTimeout(res, 4000); });
+    try { await CAM.video.play(); } catch (e) {}
+    const track = CAM.stream.getVideoTracks()[0];
+    track.onended = () => { if (CAM.el && !document.hidden) startStream().catch(() => flash("Camera stopped — tap ✕ and open it again", true)); };   // dropped out: reconnect
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    const tb = CAM.el && CAM.el.querySelector("[data-torch]"); if (tb) tb.hidden = !caps.torch;
+    CAM.track = track; CAM.ready = !!CAM.video.videoWidth; setShutter();
+  }
+  function setShutter() { const b = CAM.el && CAM.el.querySelector("[data-shoot]"); if (b) { b.disabled = !CAM.ready || CAM.busy; b.classList.toggle("wait", !CAM.ready); } }
+  function camVisibility() {          // switching apps / locking the phone: stop the camera, restart on return
+    if (!CAM.el) return;
+    if (document.hidden) { if (CAM.stream) CAM.stream.getTracks().forEach((t) => t.stop()); CAM.stream = null; CAM.ready = false; setShutter(); }
+    else startStream().catch(() => flash("Couldn't restart the camera — tap ✕ and open it again", true));
+  }
   async function openCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { alert("This browser can't open a live camera here — use 📷 Next photo instead."); return; }
-    try {
-      CAM.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 4096 }, height: { ideal: 3072 } } });
-    } catch (e) { alert("Couldn't open the camera: " + (e.message || e) + ". Allow camera access for this site, or use 📷 Next photo."); return; }
+    if (CAM.el) return;
     CAM.taken = 0;
     CAM.el = document.createElement("div"); CAM.el.className = "sb-cam-full";
-    CAM.el.innerHTML = `<video playsinline autoplay muted></video><div class="sb-cam-guide"><span>Fit the phones inside the square</span></div>
+    CAM.el.innerHTML = `<video playsinline autoplay muted></video><div class="sb-cam-guide"><span>Fit the box label inside the frame</span></div>
       <div class="sb-cam-top"><button data-camclose aria-label="Close camera">✕</button><span class="sb-cam-count"></span><button data-torch aria-label="Torch" hidden>🔦</button></div>
       <div class="sb-cam-flash"></div><div class="sb-cam-bottom"><button class="sb-shutter" data-shoot aria-label="Take photo"></button></div>`;
     document.body.appendChild(CAM.el);
-    CAM.video = CAM.el.querySelector("video"); CAM.video.srcObject = CAM.stream;
-    const track = CAM.stream.getVideoTracks()[0], caps = track.getCapabilities ? track.getCapabilities() : {};
-    if (caps.torch) CAM.el.querySelector("[data-torch]").hidden = false;
+    CAM.video = CAM.el.querySelector("video");
     CAM.el.addEventListener("click", async (e) => {
       const t = e.target;
       if (t.hasAttribute("data-camclose")) return closeCamera();
-      if (t.hasAttribute("data-torch")) { CAM.torch = !CAM.torch; try { await track.applyConstraints({ advanced: [{ torch: CAM.torch }] }); } catch (err) {} return; }
-      if (t.hasAttribute("data-shoot")) return shoot();
+      if (t.hasAttribute("data-torch")) { CAM.torch = !CAM.torch; try { await CAM.track.applyConstraints({ advanced: [{ torch: CAM.torch }] }); } catch (err) {} return; }
+      if (t.closest("[data-shoot]")) return shoot();
     });
+    document.addEventListener("visibilitychange", camVisibility);
     camCount();
+    try { await startStream(); }
+    catch (e) { closeCamera(); alert("Couldn't open the camera: " + (e.message || e) + ". Allow camera access for this site, or use 📷 Next photo."); }
   }
-  function closeCamera() { if (CAM.stream) CAM.stream.getTracks().forEach((t) => t.stop()); CAM.stream = null; if (CAM.el) CAM.el.remove(); CAM.el = null; draw(); }
+  function closeCamera() {
+    document.removeEventListener("visibilitychange", camVisibility);
+    if (CAM.stream) CAM.stream.getTracks().forEach((t) => t.stop()); CAM.stream = null; CAM.ready = false; CAM.video = null;
+    if (CAM.el) CAM.el.remove(); CAM.el = null; draw();
+  }
   function camCount() {
     if (!CAM.el) return;
     const waiting = S.Q.items.filter((x) => ["checking", "waiting", "reading"].includes(x.status)).length;
@@ -256,11 +279,16 @@
   function flash(text, bad) { const f = CAM.el && CAM.el.querySelector(".sb-cam-flash"); if (!f) return; f.textContent = text; f.className = "sb-cam-flash show" + (bad ? " bad" : ""); clearTimeout(f.t); f.t = setTimeout(() => (f.className = "sb-cam-flash"), 1100); }
   /* Grab the square from the full-resolution frame (with a little margin), check it, keep it on the phone, queue it. */
   async function shoot() {
-    const v = CAM.video; if (!v || !v.videoWidth) return;
+    const v = CAM.video; if (!v || !v.videoWidth || !CAM.ready || CAM.busy) return;
+    CAM.busy = true; setShutter();
+    try { await shootInner(v); } catch (e) { flash("Couldn't take that one — try again", true); }
+    finally { CAM.busy = false; setShutter(); }
+  }
+  async function shootInner(v) {
     const vw = v.videoWidth, vh = v.videoHeight, r = v.getBoundingClientRect();
     const g = CAM.el.querySelector(".sb-cam-guide").getBoundingClientRect();
     const k = Math.max(r.width / vw, r.height / vh), ox = (r.width - vw * k) / 2, oy = (r.height - vh * k) / 2;   // object-fit: cover
-    const m = 0.06 * g.width;
+    const m = 0.025 * g.width;            // just a sliver of margin: the photo is what you saw in the frame
     let sx = (g.left - r.left - ox - m) / k, sy = (g.top - r.top - oy - m) / k, sw = (g.width + 2 * m) / k, sh = (g.height + 2 * m) / k;
     sx = Math.max(0, sx); sy = Math.max(0, sy); sw = Math.min(vw - sx, sw); sh = Math.min(vh - sy, sh);
     const cv = document.createElement("canvas"); cv.width = Math.round(sw); cv.height = Math.round(sh);
@@ -271,9 +299,11 @@
     const key = "cam-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
     const c = ctx(), user = c && c.me ? c.me.username : (S.data && S.data.me) || "";
     const projectId = S.project && S.project.id !== "none" ? S.project.id : null;
-    await keepPhoto({ key, blob, projectId, user, at: Date.now() });                 // safe on the phone first
-    S.Q.items.unshift({ key, blob, thumb: URL.createObjectURL(blob), status: "waiting", msg: "", projectId, kept: true });
-    CAM.taken++; flash("✓ " + CAM.taken); camCount(); pump();
+    let kept = true;
+    try { await tx("readwrite", (st) => st.put({ key, blob, projectId, user, at: Date.now() })); }      // safe on the phone first
+    catch (e) { kept = false; flash("⚠ Phone storage full — keep MYDAY open until these upload", true); }
+    S.Q.items.unshift({ key, blob, thumb: URL.createObjectURL(blob), status: "waiting", msg: "", projectId, kept });
+    CAM.taken++; if (kept) flash("✓ " + CAM.taken); camCount(); pump();
   }
 
   /* How full is the server's queue (all users)? Checked every few seconds while scanning. */
@@ -607,13 +637,14 @@
   .sb-fab-btn.cam{background:linear-gradient(135deg,#4C8DF6,#2F62C9);border:0;font:inherit;font-weight:800;font-size:17px}
   .sb-cam-full{position:fixed;inset:0;z-index:2147483600;background:#000}
   .sb-cam-full video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-  .sb-cam-guide{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);width:min(78vw,62vh);aspect-ratio:1;border:3px solid #fff;border-radius:18px;
-    box-shadow:0 0 0 100vmax rgba(0,0,0,.45);pointer-events:none}
+  .sb-cam-guide{position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);width:min(94vw,120vh);aspect-ratio:16/10;border:3px solid #fff;border-radius:12px;
+    box-shadow:0 0 0 100vmax #000;pointer-events:none}
+  @media (orientation:landscape){.sb-cam-guide{width:auto;height:min(72vh,56vw)}}
   .sb-cam-guide span{position:absolute;top:-34px;left:0;right:0;text-align:center;color:#fff;font:600 14px ui-sans-serif,-apple-system,sans-serif;text-shadow:0 1px 4px #000}
   .sb-cam-top{position:absolute;top:calc(env(safe-area-inset-top,0px) + 12px);left:12px;right:12px;display:flex;gap:10px;align-items:center;color:#fff;font:600 14px ui-sans-serif,-apple-system,sans-serif}
   .sb-cam-top button{width:44px;height:44px;border-radius:12px;border:0;background:rgba(0,0,0,.5);color:#fff;font-size:18px}.sb-cam-count{flex:1;text-align:center;text-shadow:0 1px 4px #000}
   .sb-cam-bottom{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 26px);left:0;right:0;display:flex;justify-content:center}
-  .sb-shutter{width:84px;height:84px;border-radius:50%;border:6px solid #fff;background:rgba(255,255,255,.25);cursor:pointer}.sb-shutter:active{background:#fff;transform:scale(.94)}
+  .sb-shutter{width:84px;height:84px;border-radius:50%;border:6px solid #fff;background:rgba(255,255,255,.25);cursor:pointer}.sb-shutter:disabled{opacity:.4}.sb-shutter.wait{animation:sb-pulse 1s infinite}.sb-shutter:active{background:#fff;transform:scale(.94)}
   .sb-cam-flash{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);color:#fff;font:800 30px ui-sans-serif,-apple-system,sans-serif;opacity:0;transition:opacity .2s;text-shadow:0 2px 8px #000;pointer-events:none}
   .sb-cam-flash.show{opacity:1}.sb-cam-flash.bad{color:#FFD24A;font-size:20px}
   .sb-fab-btn.retake{background:linear-gradient(135deg,#F2545B,#C7343B)}
