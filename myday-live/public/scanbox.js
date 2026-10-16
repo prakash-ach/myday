@@ -34,10 +34,10 @@
 
   /* ---------- rapid mode: check on the phone, queue, read 4 at a time, save straight in ---------- */
   /* Is this photo usable? Checked on the phone, before anything is uploaded. */
-  function quality(img, minSide) {
+  function quality(img, minSide, blurMin, judgeAt) {
     const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
     if (Math.max(w, h) < (minSide || 1000)) return "too small — move closer or use the full camera";
-    const k = 640 / Math.max(w, h), cw = Math.round(w * k), ch = Math.round(h * k), cv = document.createElement("canvas");
+    const k = (judgeAt || 640) / Math.max(w, h), cw = Math.round(w * k), ch = Math.round(h * k), cv = document.createElement("canvas");
     cv.width = cw; cv.height = ch; const g = cv.getContext("2d", { willReadFrequently: true }); g.drawImage(img, 0, 0, cw, ch);
     const px = g.getImageData(0, 0, cw, ch).data, gray = new Float32Array(cw * ch);
     let sum = 0; for (let i = 0, j = 0; i < px.length; i += 4, j++) { gray[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; sum += gray[j]; }
@@ -50,7 +50,7 @@
       const i = y * cw + x, v = 4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - cw] - gray[i + cw]; s1 += v; s2 += v * v; n++;
     }
     const varLap = s2 / n - (s1 / n) ** 2;
-    if (varLap < 40) return "too blurry — hold still and tap to focus";
+    if (varLap < (blurMin || 40)) return "too blurry — hold still and tap to focus";
     return "";
   }
   const loadImg = (file) => new Promise((res, rej) => { const img = new Image(), url = URL.createObjectURL(file); img.onload = () => res({ img, url }); img.onerror = () => rej(new Error("not a photo")); img.src = url; });
@@ -238,26 +238,33 @@
     let edges = 0, n = 0, s1 = 0, s2 = 0;
     for (let y = 1; y < SH - 1; y++) for (let x = 1; x < SW - 1; x++) {
       const i = y * SW + x, gx = gray[i + 1] - gray[i - 1], gy = gray[i + SW] - gray[i - SW];
-      if (Math.abs(gx) + Math.abs(gy) > 60) edges++;
+      if (Math.abs(gx) + Math.abs(gy) > 40) edges++;
       const l = 4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - SW] - gray[i + SW]; s1 += l; s2 += l * l; n++;
     }
-    return { gray, mean: sum / gray.length, edges: edges / n, sharp: s2 / n - (s1 / n) ** 2 };
+    // 24×15 block averages, brightness-normalised: judges the overall picture, not pixel jitter.
+    const BW = 8, cols = SW / BW, rows = SH / BW, grid = new Float32Array(cols * rows), mean = sum / gray.length;
+    for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) grid[((y / BW) | 0) * cols + ((x / BW) | 0)] += gray[y * SW + x];
+    for (let i = 0; i < grid.length; i++) grid[i] = grid[i] / (BW * BW) - mean;
+    return { gray, grid, mean, edges: edges / n, sharp: s2 / n - (s1 / n) ** 2 };
   }
-  const diffOf = (a, b) => { if (!a || !b) return 255; let d = 0; for (let i = 0; i < a.length; i += 3) d += Math.abs(a[i] - b[i]); return d / (a.length / 3); };
+  const diffOf = (a, b) => { if (!a || !b || a.length !== b.length) return 255; let d = 0; for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]); return d / a.length; };
   function autoTick() {
     if (!CAM.el) return;
     if (!CAM.auto) return setAuto("Auto is off — tap the shutter", 0);
     if (!CAM.ready || CAM.busy) return;
     const f = sampleFrame(); if (!f) return;
-    const moving = diffOf(f.gray, AUTO.prev && AUTO.prev.gray); AUTO.prev = f; AUTO.lastInfo = f;
+    const moving = diffOf(f.grid, AUTO.prev && AUTO.prev.grid); AUTO.prev = f; AUTO.lastInfo = { ...f, moving };
     // After a shot, wait until the picture has clearly changed (the next box) before arming again.
-    if (!AUTO.armed) { if (diffOf(f.gray, AUTO.last) > 22) AUTO.armed = true; else return setAuto(`✓ ${CAM.taken} — place the next box`, 0); }
-    if (!(f.edges > 0.06 && f.mean > 40 && f.mean < 240)) { AUTO.steady = 0; return setAuto("Looking for a label…", 0); }
-    if (moving > 6 || f.sharp < 120) { AUTO.steady = 0; return setAuto("Hold steady…", 0.15); }
-    AUTO.steady++;
-    if (AUTO.steady < 4) return setAuto("Hold steady…", AUTO.steady / 4);      // ~0.6 s of steady, sharp frames
-    AUTO.steady = 0; AUTO.armed = false; AUTO.last = f.gray;
-    setAuto("Capturing…", 1); shoot(true);
+    if (!AUTO.armed) { if (diffOf(f.grid, AUTO.last) > 16) AUTO.armed = true; else return setAuto(`✓ ${CAM.taken} — place the next box`, 0); }
+    if (!(f.edges > 0.02 && f.mean > 35 && f.mean < 250)) { AUTO.steady = 0; AUTO.seen = 0; return setAuto("Looking for a label…", 0); }
+    // A label is in the frame: take it as soon as it settles (~0.2 s), or after ~0.6 s whatever the movement.
+    AUTO.seen = (AUTO.seen || 0) + 1;
+    if (moving <= 14) AUTO.steady++; else AUTO.steady = 0;
+    const go = (AUTO.steady >= 1 && AUTO.seen >= 2) || AUTO.seen >= 4;
+    if (!go) return setAuto("Label found…", Math.max(AUTO.steady, AUTO.seen / 4));
+    AUTO.steady = 0; AUTO.seen = 0; AUTO.armed = false; AUTO.last = f.grid;
+    setAuto("Capturing…", 1);
+    shoot(true).then((ok) => { if (!ok) { AUTO.armed = true; AUTO.last = null; } });     // a rejected shot: try again, don't wait for a "next box"
   }
   function setAuto(text, progress) {
     if (!CAM.el) return;
@@ -287,10 +294,11 @@
   async function openCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { alert("This browser can't open a live camera here — use 📷 Next photo instead."); return; }
     if (CAM.el) return;
+    unlockBeep();
     CAM.taken = 0;
     CAM.el = document.createElement("div"); CAM.el.className = "sb-cam-full";
     CAM.el.innerHTML = `<video playsinline autoplay muted></video><div class="sb-cam-guide"><span>Fit the box label inside the frame</span></div>
-      <div class="sb-cam-top"><button data-camclose aria-label="Close camera">✕</button><span class="sb-cam-count"></span><button data-torch aria-label="Torch" hidden>🔦</button></div>
+      <div class="sb-cam-top"><button data-camclose aria-label="Close camera">✕</button><span class="sb-cam-count"></span><small class="sb-cam-ver">v${esc(window.MYDAY_BUILD || "?")}</small><button data-torch aria-label="Torch" hidden>🔦</button></div>
       <div class="sb-cam-flash"></div><div class="sb-auto-msg" aria-live="polite"></div>
       <div class="sb-cam-bottom"><button class="sb-autotog ${CAM.auto ? "on" : ""}" data-auto>Auto ${CAM.auto ? "on" : "off"}</button><button class="sb-shutter" data-shoot aria-label="Take photo"></button><span style="width:74px"></span></div>`;
     document.body.appendChild(CAM.el);
@@ -320,14 +328,28 @@
     const busyNow = S.Q.items.filter((x) => x.status === "reading").length;
     CAM.el.querySelector(".sb-cam-count").textContent = `${CAM.taken} taken · processing ${busyNow} of ${WORKERS} · ${Math.max(0, waiting - busyNow)} waiting`;
   }
+  /* Scanner beep on every capture (sound is unlocked by the tap that opened the camera). */
+  let AC = null;
+  function unlockBeep() { try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}   // iOS: play even with the silent switch on
+    try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === "suspended") AC.resume(); } catch (e) {} }
+  function beep() {
+    try {
+      if (AC) { const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+        o.type = "square"; o.frequency.setValueAtTime(2400, t); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+        o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + 0.12); }
+    } catch (e) {}
+    try { navigator.vibrate && navigator.vibrate(40); } catch (e) {}
+  }
   function flash(text, bad) { const f = CAM.el && CAM.el.querySelector(".sb-cam-flash"); if (!f) return; f.textContent = text; f.className = "sb-cam-flash show" + (bad ? " bad" : ""); clearTimeout(f.t); f.t = setTimeout(() => (f.className = "sb-cam-flash"), 1100); }
   /* Grab the square from the full-resolution frame (with a little margin), check it, keep it on the phone, queue it. */
   async function shoot(fromAuto) {
     const v = CAM.video; if (!v || !v.videoWidth || !CAM.ready || CAM.busy) return;
-    if (fromAuto !== true) { const f = sampleFrame(); if (f) { AUTO.last = f.gray; AUTO.armed = false; } }
+    if (fromAuto !== true) { const f = sampleFrame(); if (f) { AUTO.last = f.grid; AUTO.armed = false; } }
     CAM.busy = true; setShutter();
-    try { await shootInner(v); } catch (e) { flash("Couldn't take that one — try again", true); }
+    let ok = false;
+    try { ok = await shootInner(v); } catch (e) { flash("Couldn't take that one — try again", true); }
     finally { CAM.busy = false; setShutter(); }
+    return ok;
   }
   function cropBox(v) {
     const vw = v.videoWidth, vh = v.videoHeight, r = v.getBoundingClientRect(), gEl = CAM.el && CAM.el.querySelector(".sb-cam-guide");
@@ -346,8 +368,8 @@
     sx = Math.max(0, sx); sy = Math.max(0, sy); sw = Math.min(vw - sx, sw); sh = Math.min(vh - sy, sh);
     const cv = document.createElement("canvas"); cv.width = Math.round(sw); cv.height = Math.round(sh);
     cv.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
-    const bad = quality(cv, 500);
-    if (bad) { flash("⚠ " + bad.split(" — ")[0] + " — try again", true); return; }
+    const bad = quality(cv, 400, 8, 320);         // only a truly smeared shot is rejected
+    if (bad) { flash("⚠ " + bad.split(" — ")[0] + " — try again", true); return false; }
     const blob = await new Promise((res) => cv.toBlob(res, "image/jpeg", 0.93));
     const key = "cam-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
     const c = ctx(), user = c && c.me ? c.me.username : (S.data && S.data.me) || "";
@@ -356,7 +378,8 @@
     try { await tx("readwrite", (st) => st.put({ key, blob, projectId, user, at: Date.now() })); }      // safe on the phone first
     catch (e) { kept = false; flash("⚠ Phone storage full — keep MYDAY open until these upload", true); }
     S.Q.items.unshift({ key, blob, thumb: URL.createObjectURL(blob), status: "waiting", msg: "", projectId, kept });
-    CAM.taken++; if (kept) flash("✓ " + CAM.taken); camCount(); pump();
+    CAM.taken++; beep(); if (kept) flash("✓ " + CAM.taken); camCount(); pump();
+    return true;
   }
 
   /* How full is the server's queue (all users)? Checked every few seconds while scanning. */
@@ -695,7 +718,7 @@
   @media (orientation:landscape){.sb-cam-guide{width:auto;height:min(72vh,56vw)}}
   .sb-cam-guide span{position:absolute;top:-34px;left:0;right:0;text-align:center;color:#fff;font:600 14px ui-sans-serif,-apple-system,sans-serif;text-shadow:0 1px 4px #000}
   .sb-cam-top{position:absolute;top:calc(env(safe-area-inset-top,0px) + 12px);left:12px;right:12px;display:flex;gap:10px;align-items:center;color:#fff;font:600 14px ui-sans-serif,-apple-system,sans-serif}
-  .sb-cam-top button{width:44px;height:44px;border-radius:12px;border:0;background:rgba(0,0,0,.5);color:#fff;font-size:18px}.sb-cam-count{flex:1;text-align:center;text-shadow:0 1px 4px #000}
+  .sb-cam-top button{width:44px;height:44px;border-radius:12px;border:0;background:rgba(0,0,0,.5);color:#fff;font-size:18px}.sb-cam-count{flex:1;text-align:center;text-shadow:0 1px 4px #000}.sb-cam-ver{opacity:.6;font-size:11px}
   .sb-cam-bottom{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 26px);left:0;right:0;display:flex;justify-content:center}
   .sb-shutter{width:84px;height:84px;border-radius:50%;border:6px solid #fff;background:rgba(255,255,255,.25);cursor:pointer}.sb-shutter:disabled{opacity:.4}
   .sb-shutter{background:conic-gradient(#22C55E calc(var(--p,0)*360deg),rgba(255,255,255,.25) 0)}
@@ -757,5 +780,5 @@
     draw(); loadProjects().then(() => (S.project ? load() : draw())).then(pollQueue).then(resumeKept);
   }
   function unmount() { S.host = null; document.body.classList.remove("sb-on"); drawFab(); }
-  window.MYDAYScanBox = { _auto: () => AUTO.lastInfo && { edges: +AUTO.lastInfo.edges.toFixed(3), sharp: Math.round(AUTO.lastInfo.sharp), mean: Math.round(AUTO.lastInfo.mean) }, mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
+  window.MYDAYScanBox = { _auto: () => AUTO.lastInfo && { edges: +AUTO.lastInfo.edges.toFixed(3), sharp: Math.round(AUTO.lastInfo.sharp), mean: Math.round(AUTO.lastInfo.mean), moving: +AUTO.lastInfo.moving.toFixed(1) }, mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
 })();

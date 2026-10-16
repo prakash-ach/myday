@@ -866,6 +866,33 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Lightweight checks, not shape recognition. Tested with a simulated camera:
   steady label → 1 shot then waits; empty view → never fires.
 
+### 17 October 2026 — auto-capture made hand-friendly
+- Prakash's phone screenshots: sharp labels in frame stuck on "Hold steady…".
+  Causes: pixel-level movement test (hand shake + exposure flicker), a 0.6 s
+  hold, a strict trigger sharpness, and a full-detail blur check on the shot;
+  also a rejected auto shot left the camera waiting for a "next box".
+- Now: movement judged on a 24×15 brightness-normalised grid (≤ 12); 2 steady
+  samples (~0.3 s) or ~1 s of a readable label with moderate movement (≤ 28)
+  fires; trigger sharpness ≥ 60; label present = edge density > 0.02 (edge
+  strength 40) — white labels on white card count; the camera shot's blur
+  check is judged at 320 px (threshold 22); a rejected shot re-arms at once.
+- Tested with feeds built from his photos: shaking hand-held label → captured
+  in < 2 s, once; heavily blurred → never; empty → never.
+
+### 17 October 2026 — auto-capture: fast, beep, fixed-phone station
+- Still stuck on "Hold steady…" on a real iPhone (soft video). Now: no
+  sharpness gate for triggering; a label in frame is taken once it settles
+  (1 sample ≤ 14 movement after 2 sightings, ~0.2–0.3 s) or after 4 sightings
+  (~0.6 s) regardless of movement. Final check rejects only a truly smeared
+  shot (blur < 8 at 320 px) or < 400 px. Rearm after the picture changes.
+- Scanner beep on every capture (Web Audio square 2.4 kHz, ~110 ms; unlocked by
+  the tap that opens the camera) + 40 ms vibration where supported.
+- Camera shows the version (vNN) top-right.
+- Tested: shaking hand-held → 0.5 s; boxes sliding under a fixed phone → one
+  capture per box with a beep each; empty → none.
+- Recommended station: phone fixed facing down on a stand, even light,
+  slide boxes underneath label-up.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
