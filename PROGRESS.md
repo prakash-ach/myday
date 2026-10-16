@@ -853,6 +853,19 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested: disabled-until-ready, frame 373×235, saved photo 712×462 (same
   shape), double-tap → 1 photo, rapid taps → each saved and processing.
 
+### 16 October 2026 — Scan Boxes camera: auto-capture
+- The camera samples the frame area ~7×/s (192×120 grey): label present =
+  edge density > 0.06 (barcodes/print) with sane brightness; steady = mean
+  frame-to-frame difference ≤ 6; sharp = Laplacian variance ≥ 120. Four
+  steady, sharp samples in a row (~0.6 s) → automatic shot (still passes the
+  full-size blur/dark check). After a shot it waits for the picture to change
+  clearly (diff > 22 vs the shot) before arming again — no repeat shots of the
+  same box. Status line ("Looking for a label…" / "Hold steady…" / "✓ N —
+  place the next box"), a green ring filling on the shutter, Auto on/off
+  toggle; manual shutter still works (and also waits for the next box).
+- Lightweight checks, not shape recognition. Tested with a simulated camera:
+  steady label → 1 shot then waits; empty view → never fires.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

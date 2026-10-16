@@ -223,7 +223,47 @@
   }
 
   /* ---------- the MYDAY camera: live view, square guide, tap tap tap ---------- */
-  const CAM = { el: null, stream: null, video: null, taken: 0, torch: false };
+  const CAM = { el: null, stream: null, video: null, taken: 0, torch: false, auto: true };
+  /* ---------- auto-capture: label in the frame, steady, sharp → take it; then wait for the next box ---------- */
+  const AUTO = { cv: null, prev: null, last: null, steady: 0, armed: true, t: null };
+  const SW = 192, SH = 120;
+  function sampleFrame() {
+    const v = CAM.video; if (!v || !v.videoWidth) return null;
+    const box = cropBox(v); if (!box) return null;
+    if (!AUTO.cv) { AUTO.cv = document.createElement("canvas"); AUTO.cv.width = SW; AUTO.cv.height = SH; }
+    const g = AUTO.cv.getContext("2d", { willReadFrequently: true });
+    g.drawImage(v, box[0], box[1], box[2], box[3], 0, 0, SW, SH);
+    const px = g.getImageData(0, 0, SW, SH).data, gray = new Float32Array(SW * SH);
+    let sum = 0; for (let i = 0, j = 0; i < px.length; i += 4, j++) { gray[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; sum += gray[j]; }
+    let edges = 0, n = 0, s1 = 0, s2 = 0;
+    for (let y = 1; y < SH - 1; y++) for (let x = 1; x < SW - 1; x++) {
+      const i = y * SW + x, gx = gray[i + 1] - gray[i - 1], gy = gray[i + SW] - gray[i - SW];
+      if (Math.abs(gx) + Math.abs(gy) > 60) edges++;
+      const l = 4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - SW] - gray[i + SW]; s1 += l; s2 += l * l; n++;
+    }
+    return { gray, mean: sum / gray.length, edges: edges / n, sharp: s2 / n - (s1 / n) ** 2 };
+  }
+  const diffOf = (a, b) => { if (!a || !b) return 255; let d = 0; for (let i = 0; i < a.length; i += 3) d += Math.abs(a[i] - b[i]); return d / (a.length / 3); };
+  function autoTick() {
+    if (!CAM.el) return;
+    if (!CAM.auto) return setAuto("Auto is off — tap the shutter", 0);
+    if (!CAM.ready || CAM.busy) return;
+    const f = sampleFrame(); if (!f) return;
+    const moving = diffOf(f.gray, AUTO.prev && AUTO.prev.gray); AUTO.prev = f; AUTO.lastInfo = f;
+    // After a shot, wait until the picture has clearly changed (the next box) before arming again.
+    if (!AUTO.armed) { if (diffOf(f.gray, AUTO.last) > 22) AUTO.armed = true; else return setAuto(`✓ ${CAM.taken} — place the next box`, 0); }
+    if (!(f.edges > 0.06 && f.mean > 40 && f.mean < 240)) { AUTO.steady = 0; return setAuto("Looking for a label…", 0); }
+    if (moving > 6 || f.sharp < 120) { AUTO.steady = 0; return setAuto("Hold steady…", 0.15); }
+    AUTO.steady++;
+    if (AUTO.steady < 4) return setAuto("Hold steady…", AUTO.steady / 4);      // ~0.6 s of steady, sharp frames
+    AUTO.steady = 0; AUTO.armed = false; AUTO.last = f.gray;
+    setAuto("Capturing…", 1); shoot(true);
+  }
+  function setAuto(text, progress) {
+    if (!CAM.el) return;
+    const st = CAM.el.querySelector(".sb-auto-msg"); if (st && st.textContent !== text) st.textContent = text;
+    const b = CAM.el.querySelector("[data-shoot]"); if (b) b.style.setProperty("--p", String(Math.max(0, Math.min(1, progress || 0))));
+  }
   async function startStream() {
     CAM.ready = false; setShutter();
     if (CAM.stream) CAM.stream.getTracks().forEach((t) => t.stop());
@@ -251,7 +291,8 @@
     CAM.el = document.createElement("div"); CAM.el.className = "sb-cam-full";
     CAM.el.innerHTML = `<video playsinline autoplay muted></video><div class="sb-cam-guide"><span>Fit the box label inside the frame</span></div>
       <div class="sb-cam-top"><button data-camclose aria-label="Close camera">✕</button><span class="sb-cam-count"></span><button data-torch aria-label="Torch" hidden>🔦</button></div>
-      <div class="sb-cam-flash"></div><div class="sb-cam-bottom"><button class="sb-shutter" data-shoot aria-label="Take photo"></button></div>`;
+      <div class="sb-cam-flash"></div><div class="sb-auto-msg" aria-live="polite"></div>
+      <div class="sb-cam-bottom"><button class="sb-autotog ${CAM.auto ? "on" : ""}" data-auto>Auto ${CAM.auto ? "on" : "off"}</button><button class="sb-shutter" data-shoot aria-label="Take photo"></button><span style="width:74px"></span></div>`;
     document.body.appendChild(CAM.el);
     CAM.video = CAM.el.querySelector("video");
     CAM.el.addEventListener("click", async (e) => {
@@ -259,13 +300,16 @@
       if (t.hasAttribute("data-camclose")) return closeCamera();
       if (t.hasAttribute("data-torch")) { CAM.torch = !CAM.torch; try { await CAM.track.applyConstraints({ advanced: [{ torch: CAM.torch }] }); } catch (err) {} return; }
       if (t.closest("[data-shoot]")) return shoot();
+      if (t.hasAttribute("data-auto")) { CAM.auto = !CAM.auto; t.classList.toggle("on", CAM.auto); t.textContent = "Auto " + (CAM.auto ? "on" : "off"); AUTO.steady = 0; return; }
     });
     document.addEventListener("visibilitychange", camVisibility);
     camCount();
+    clearInterval(AUTO.t); AUTO.prev = null; AUTO.last = null; AUTO.armed = true; AUTO.steady = 0; AUTO.t = setInterval(autoTick, 150);
     try { await startStream(); }
     catch (e) { closeCamera(); alert("Couldn't open the camera: " + (e.message || e) + ". Allow camera access for this site, or use 📷 Next photo."); }
   }
   function closeCamera() {
+    clearInterval(AUTO.t); AUTO.t = null;
     document.removeEventListener("visibilitychange", camVisibility);
     if (CAM.stream) CAM.stream.getTracks().forEach((t) => t.stop()); CAM.stream = null; CAM.ready = false; CAM.video = null;
     if (CAM.el) CAM.el.remove(); CAM.el = null; draw();
@@ -278,11 +322,20 @@
   }
   function flash(text, bad) { const f = CAM.el && CAM.el.querySelector(".sb-cam-flash"); if (!f) return; f.textContent = text; f.className = "sb-cam-flash show" + (bad ? " bad" : ""); clearTimeout(f.t); f.t = setTimeout(() => (f.className = "sb-cam-flash"), 1100); }
   /* Grab the square from the full-resolution frame (with a little margin), check it, keep it on the phone, queue it. */
-  async function shoot() {
+  async function shoot(fromAuto) {
     const v = CAM.video; if (!v || !v.videoWidth || !CAM.ready || CAM.busy) return;
+    if (fromAuto !== true) { const f = sampleFrame(); if (f) { AUTO.last = f.gray; AUTO.armed = false; } }
     CAM.busy = true; setShutter();
     try { await shootInner(v); } catch (e) { flash("Couldn't take that one — try again", true); }
     finally { CAM.busy = false; setShutter(); }
+  }
+  function cropBox(v) {
+    const vw = v.videoWidth, vh = v.videoHeight, r = v.getBoundingClientRect(), gEl = CAM.el && CAM.el.querySelector(".sb-cam-guide");
+    if (!gEl || !vw) return null;
+    const g = gEl.getBoundingClientRect(), k = Math.max(r.width / vw, r.height / vh), ox = (r.width - vw * k) / 2, oy = (r.height - vh * k) / 2, m = 0.025 * g.width;
+    let sx = (g.left - r.left - ox - m) / k, sy = (g.top - r.top - oy - m) / k, sw = (g.width + 2 * m) / k, sh = (g.height + 2 * m) / k;
+    sx = Math.max(0, sx); sy = Math.max(0, sy); sw = Math.min(vw - sx, sw); sh = Math.min(vh - sy, sh);
+    return [sx, sy, sw, sh];
   }
   async function shootInner(v) {
     const vw = v.videoWidth, vh = v.videoHeight, r = v.getBoundingClientRect();
@@ -644,7 +697,11 @@
   .sb-cam-top{position:absolute;top:calc(env(safe-area-inset-top,0px) + 12px);left:12px;right:12px;display:flex;gap:10px;align-items:center;color:#fff;font:600 14px ui-sans-serif,-apple-system,sans-serif}
   .sb-cam-top button{width:44px;height:44px;border-radius:12px;border:0;background:rgba(0,0,0,.5);color:#fff;font-size:18px}.sb-cam-count{flex:1;text-align:center;text-shadow:0 1px 4px #000}
   .sb-cam-bottom{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 26px);left:0;right:0;display:flex;justify-content:center}
-  .sb-shutter{width:84px;height:84px;border-radius:50%;border:6px solid #fff;background:rgba(255,255,255,.25);cursor:pointer}.sb-shutter:disabled{opacity:.4}.sb-shutter.wait{animation:sb-pulse 1s infinite}.sb-shutter:active{background:#fff;transform:scale(.94)}
+  .sb-shutter{width:84px;height:84px;border-radius:50%;border:6px solid #fff;background:rgba(255,255,255,.25);cursor:pointer}.sb-shutter:disabled{opacity:.4}
+  .sb-shutter{background:conic-gradient(#22C55E calc(var(--p,0)*360deg),rgba(255,255,255,.25) 0)}
+  .sb-cam-bottom{align-items:center;gap:22px}
+  .sb-autotog{width:74px;height:40px;border-radius:999px;border:2px solid #fff;background:rgba(0,0,0,.4);color:#fff;font:700 13px ui-sans-serif,-apple-system,sans-serif}.sb-autotog.on{background:#22C55E;border-color:#22C55E}
+  .sb-auto-msg{position:absolute;left:0;right:0;bottom:calc(env(safe-area-inset-bottom,0px) + 128px);text-align:center;color:#fff;font:700 16px ui-sans-serif,-apple-system,sans-serif;text-shadow:0 1px 6px #000}.sb-shutter.wait{animation:sb-pulse 1s infinite}.sb-shutter:active{background:#fff;transform:scale(.94)}
   .sb-cam-flash{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);color:#fff;font:800 30px ui-sans-serif,-apple-system,sans-serif;opacity:0;transition:opacity .2s;text-shadow:0 2px 8px #000;pointer-events:none}
   .sb-cam-flash.show{opacity:1}.sb-cam-flash.bad{color:#FFD24A;font-size:20px}
   .sb-fab-btn.retake{background:linear-gradient(135deg,#F2545B,#C7343B)}
@@ -700,5 +757,5 @@
     draw(); loadProjects().then(() => (S.project ? load() : draw())).then(pollQueue).then(resumeKept);
   }
   function unmount() { S.host = null; document.body.classList.remove("sb-on"); drawFab(); }
-  window.MYDAYScanBox = { mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
+  window.MYDAYScanBox = { _auto: () => AUTO.lastInfo && { edges: +AUTO.lastInfo.edges.toFixed(3), sharp: Math.round(AUTO.lastInfo.sharp), mean: Math.round(AUTO.lastInfo.mean) }, mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
 })();
