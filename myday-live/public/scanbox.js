@@ -256,7 +256,12 @@
     const moving = diffOf(f.grid, AUTO.prev && AUTO.prev.grid); AUTO.prev = f; AUTO.lastInfo = { ...f, moving };
     // After a shot, wait until the picture has clearly changed (the next box) before arming again.
     if (!AUTO.armed) { if (diffOf(f.grid, AUTO.last) > 16) AUTO.armed = true; else return setAuto(`✓ ${CAM.taken} — place the next box`, 0); }
-    if (!(f.edges > 0.02 && f.mean > 35 && f.mean < 250)) { AUTO.steady = 0; AUTO.seen = 0; return setAuto("Looking for a label…", 0); }
+    // The empty surface (wood, mat…) is learned: the quietest view seen lately, creeping up slowly.
+    // Only quiet views can be "the surface" — a label in view never becomes the background.
+    if (f.edges < 0.08) AUTO.bg = AUTO.bg == null ? f.edges : Math.min(AUTO.bg + 0.0004, f.edges);
+    const need = AUTO.bg == null ? 0.08 : Math.max(0.08, AUTO.bg + 0.03);
+    AUTO.need = need;
+    if (!(f.edges > need && f.mean > 35 && f.mean < 250)) { AUTO.steady = 0; AUTO.seen = 0; return setAuto("Looking for a label…", 0); }
     // A label is in the frame: take it as soon as it settles (~0.2 s), or after ~0.6 s whatever the movement.
     AUTO.seen = (AUTO.seen || 0) + 1;
     if (moving <= 14) AUTO.steady++; else AUTO.steady = 0;
@@ -312,7 +317,7 @@
     });
     document.addEventListener("visibilitychange", camVisibility);
     camCount();
-    clearInterval(AUTO.t); AUTO.prev = null; AUTO.last = null; AUTO.armed = true; AUTO.steady = 0; AUTO.t = setInterval(autoTick, 150);
+    clearInterval(AUTO.t); AUTO.prev = null; AUTO.last = null; AUTO.armed = true; AUTO.steady = 0; AUTO.bg = null; AUTO.t = setInterval(autoTick, 150);
     try { await startStream(); }
     catch (e) { closeCamera(); alert("Couldn't open the camera: " + (e.message || e) + ". Allow camera access for this site, or use 📷 Next photo."); }
   }
@@ -780,5 +785,5 @@
     draw(); loadProjects().then(() => (S.project ? load() : draw())).then(pollQueue).then(resumeKept);
   }
   function unmount() { S.host = null; document.body.classList.remove("sb-on"); drawFab(); }
-  window.MYDAYScanBox = { _auto: () => AUTO.lastInfo && { edges: +AUTO.lastInfo.edges.toFixed(3), sharp: Math.round(AUTO.lastInfo.sharp), mean: Math.round(AUTO.lastInfo.mean), moving: +AUTO.lastInfo.moving.toFixed(1) }, mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
+  window.MYDAYScanBox = { _auto: () => AUTO.lastInfo && { edges: +AUTO.lastInfo.edges.toFixed(3), sharp: Math.round(AUTO.lastInfo.sharp), mean: Math.round(AUTO.lastInfo.mean), moving: +AUTO.lastInfo.moving.toFixed(1), need: AUTO.need && +AUTO.need.toFixed(3), bg: AUTO.bg != null ? +AUTO.bg.toFixed(3) : null }, mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
 })();

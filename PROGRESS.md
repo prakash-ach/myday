@@ -893,6 +893,16 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Recommended station: phone fixed facing down on a stand, even light,
   slide boxes underneath label-up.
 
+### 17 October 2026 — auto-capture: no more empty-table shots
+- Prakash's video showed captures of the bare wooden table (✓46, ✓51). Measured
+  from his video frames: labels 0.10–0.31 edge density (gradient > 40), empty
+  wood ≈ 0.06; the trigger was 0.02.
+- Label threshold now 0.08, and the camera learns the empty surface from quiet
+  views only (edges < 0.08; slow upward creep): need = max(0.08, surface +
+  0.03). A label in view never becomes the background.
+- Tested: empty wood → 0; 3 boxes sliding over wood → 3 (beep each); opening on
+  a label → 0.3 s; empty plain → 0.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
