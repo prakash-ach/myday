@@ -815,6 +815,20 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested: 4-box photo with 3 unreadable, position-less boxes → 1 saved, the 3
   named in Retake.
 
+### 16 October 2026 — Scan Boxes: in-app camera, photos kept on the phone until read
+- 📸 Camera (blue button next to Next photo): full-screen live view from the
+  rear camera (getUserMedia, ideal 4096×3072), square guide in the middle,
+  big shutter for rapid shots, torch where supported. Each shot crops the
+  square (+6% margin) from the full-resolution frame, is checked for blur /
+  darkness / size (min 500 px) — bad shots flash "try again" and aren't kept.
+- Every accepted shot is saved in the phone's IndexedDB ("myday-scan") first,
+  then queued; removed only after the server has read it (done or retake).
+  Opening the project again resumes anything left on the phone (closed app,
+  lost signal, server restart). The camera never locks on a full queue —
+  photos wait on the phone. Native camera and Choose photos remain.
+- Tested with a simulated camera: 6 rapid shots stored, reload mid-upload,
+  resumed, all read, phone copies cleared.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

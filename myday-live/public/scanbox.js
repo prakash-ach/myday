@@ -34,9 +34,9 @@
 
   /* ---------- rapid mode: check on the phone, queue, read 4 at a time, save straight in ---------- */
   /* Is this photo usable? Checked on the phone, before anything is uploaded. */
-  function quality(img) {
+  function quality(img, minSide) {
     const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-    if (Math.max(w, h) < 1000) return "too small — move closer or use the full camera";
+    if (Math.max(w, h) < (minSide || 1000)) return "too small — move closer or use the full camera";
     const k = 640 / Math.max(w, h), cw = Math.round(w * k), ch = Math.round(h * k), cv = document.createElement("canvas");
     cv.width = cw; cv.height = ch; const g = cv.getContext("2d", { willReadFrequently: true }); g.drawImage(img, 0, 0, cw, ch);
     const px = g.getImageData(0, 0, cw, ch).data, gray = new Float32Array(cw * ch);
@@ -90,7 +90,7 @@
       const it = S.Q.items.slice().reverse().find((x) => x.status === "waiting");
       if (!it) break;
       S.Q.running++; it.status = "reading"; draw();
-      work(it).finally(() => { S.Q.running--; it.img = it.status === "retake" ? it.img : null; draw(); refreshSoon(); pump(); });
+      work(it).finally(() => { S.Q.running--; it.img = it.status === "retake" ? it.img : null; it.blob = it.status === "retake" ? it.blob : null; draw(); refreshSoon(); pump(); });
     }
   }
   /* ---------- reliable requests: retry until it gets through ---------- */
@@ -117,6 +117,13 @@
     }
   }
   async function work(it) {
+    if (!it.img && it.blob) it.img = (await loadImg(it.blob)).img;
+    try { await workInner(it); } finally {
+      if (it.kept && ["done", "retake"].includes(it.status)) { dropKept(it.key); it.kept = false; }   // read by the server: no longer needed on the phone
+      camCount();
+    }
+  }
+  async function workInner(it) {
     // 1) upload (quick) → a ticket. Retried uploads of the same photo get the same ticket.
     const image = it.payload || (it.payload = jpeg(it.img, 2400));
     const projectId = it.projectId;
@@ -182,12 +189,92 @@
     if (!fabHost) {
       fabHost = document.createElement("div"); document.body.appendChild(fabHost);
       fabHost.addEventListener("change", (e) => onChange(e));
+      fabHost.addEventListener("click", (e) => { if (e.target.closest("[data-opencam]")) openCamera(); });
     }
     const c = ctx();
     fabHost.className = "sb " + (c && c.isDark === false ? "light" : "dark");
     fabHost.style.cssText = `--a:${(c && c.accent) || "#2FBF87"};padding:0;margin:0`;
     fabHost.innerHTML = actionBar();
   }
+  /* ---------- photos kept on the phone until the server has read them ---------- */
+  const DB = { db: null };
+  function idb() {
+    if (DB.db) return Promise.resolve(DB.db);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open("myday-scan", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("photos", { keyPath: "key" });
+      r.onsuccess = () => { DB.db = r.result; res(DB.db); }; r.onerror = () => rej(r.error);
+    });
+  }
+  const tx = (mode, fn) => idb().then((db) => new Promise((res, rej) => { const t = db.transaction("photos", mode), st = t.objectStore("photos"); const q = fn(st); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); }));
+  const keepPhoto = (rec) => tx("readwrite", (st) => st.put(rec)).catch(() => {});
+  const dropKept = (key) => tx("readwrite", (st) => st.delete(key)).catch(() => {});
+  const allKept = () => tx("readonly", (st) => st.getAll()).catch(() => []);
+  /* Opening a project picks up anything still on the phone from before (closed app, lost signal…). */
+  async function resumeKept() {
+    const c = ctx(), me = c && c.me ? c.me.username : (S.data && S.data.me) || "";
+    const recs = (await allKept()) || [];
+    for (const r of recs) {
+      if (S.Q.items.some((x) => x.key === r.key)) continue;
+      if (r.user && me && r.user !== me) continue;
+      S.Q.items.unshift({ key: r.key, blob: r.blob, thumb: URL.createObjectURL(r.blob), status: "waiting", msg: "resumed from the phone", projectId: r.projectId, kept: true });
+    }
+    if (recs.length) { draw(); pump(); }
+  }
+
+  /* ---------- the MYDAY camera: live view, square guide, tap tap tap ---------- */
+  const CAM = { el: null, stream: null, video: null, taken: 0, torch: false };
+  async function openCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { alert("This browser can't open a live camera here — use 📷 Next photo instead."); return; }
+    try {
+      CAM.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 4096 }, height: { ideal: 3072 } } });
+    } catch (e) { alert("Couldn't open the camera: " + (e.message || e) + ". Allow camera access for this site, or use 📷 Next photo."); return; }
+    CAM.taken = 0;
+    CAM.el = document.createElement("div"); CAM.el.className = "sb-cam-full";
+    CAM.el.innerHTML = `<video playsinline autoplay muted></video><div class="sb-cam-guide"><span>Fit the phones inside the square</span></div>
+      <div class="sb-cam-top"><button data-camclose aria-label="Close camera">✕</button><span class="sb-cam-count"></span><button data-torch aria-label="Torch" hidden>🔦</button></div>
+      <div class="sb-cam-flash"></div><div class="sb-cam-bottom"><button class="sb-shutter" data-shoot aria-label="Take photo"></button></div>`;
+    document.body.appendChild(CAM.el);
+    CAM.video = CAM.el.querySelector("video"); CAM.video.srcObject = CAM.stream;
+    const track = CAM.stream.getVideoTracks()[0], caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) CAM.el.querySelector("[data-torch]").hidden = false;
+    CAM.el.addEventListener("click", async (e) => {
+      const t = e.target;
+      if (t.hasAttribute("data-camclose")) return closeCamera();
+      if (t.hasAttribute("data-torch")) { CAM.torch = !CAM.torch; try { await track.applyConstraints({ advanced: [{ torch: CAM.torch }] }); } catch (err) {} return; }
+      if (t.hasAttribute("data-shoot")) return shoot();
+    });
+    camCount();
+  }
+  function closeCamera() { if (CAM.stream) CAM.stream.getTracks().forEach((t) => t.stop()); CAM.stream = null; if (CAM.el) CAM.el.remove(); CAM.el = null; draw(); }
+  function camCount() {
+    if (!CAM.el) return;
+    const waiting = S.Q.items.filter((x) => ["checking", "waiting", "reading"].includes(x.status)).length;
+    CAM.el.querySelector(".sb-cam-count").textContent = `${CAM.taken} taken · ${waiting} on the phone, uploading`;
+  }
+  function flash(text, bad) { const f = CAM.el && CAM.el.querySelector(".sb-cam-flash"); if (!f) return; f.textContent = text; f.className = "sb-cam-flash show" + (bad ? " bad" : ""); clearTimeout(f.t); f.t = setTimeout(() => (f.className = "sb-cam-flash"), 1100); }
+  /* Grab the square from the full-resolution frame (with a little margin), check it, keep it on the phone, queue it. */
+  async function shoot() {
+    const v = CAM.video; if (!v || !v.videoWidth) return;
+    const vw = v.videoWidth, vh = v.videoHeight, r = v.getBoundingClientRect();
+    const g = CAM.el.querySelector(".sb-cam-guide").getBoundingClientRect();
+    const k = Math.max(r.width / vw, r.height / vh), ox = (r.width - vw * k) / 2, oy = (r.height - vh * k) / 2;   // object-fit: cover
+    const m = 0.06 * g.width;
+    let sx = (g.left - r.left - ox - m) / k, sy = (g.top - r.top - oy - m) / k, sw = (g.width + 2 * m) / k, sh = (g.height + 2 * m) / k;
+    sx = Math.max(0, sx); sy = Math.max(0, sy); sw = Math.min(vw - sx, sw); sh = Math.min(vh - sy, sh);
+    const cv = document.createElement("canvas"); cv.width = Math.round(sw); cv.height = Math.round(sh);
+    cv.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+    const bad = quality(cv, 500);
+    if (bad) { flash("⚠ " + bad.split(" — ")[0] + " — try again", true); return; }
+    const blob = await new Promise((res) => cv.toBlob(res, "image/jpeg", 0.93));
+    const key = "cam-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+    const c = ctx(), user = c && c.me ? c.me.username : (S.data && S.data.me) || "";
+    const projectId = S.project && S.project.id !== "none" ? S.project.id : null;
+    await keepPhoto({ key, blob, projectId, user, at: Date.now() });                 // safe on the phone first
+    S.Q.items.unshift({ key, blob, thumb: URL.createObjectURL(blob), status: "waiting", msg: "", projectId, kept: true });
+    CAM.taken++; flash("✓ " + CAM.taken); camCount(); pump();
+  }
+
   /* How full is the server's queue (all users)? Checked every few seconds while scanning. */
   S.server = { queue: 0, limit: 20 };
   const localPending = () => S.Q.items.filter((x) => ["checking", "waiting"].includes(x.status) || (x.status === "reading" && x.waiting)).length;
@@ -214,6 +301,7 @@
       <div class="sb-fab-msg ${full ? "busy" : last && last.status !== "done" ? "bad" : ""}">${line}${busy ? ` <span>· ${busy} reading in the background</span>` : ""}</div>
       <div class="sb-fab-row">
         ${rt.length ? `<label class="sb-fab-btn retake">↻ Retake${rt.length > 1 ? ` (${rt.length})` : ""}<small>${esc((rt[0].msg || "").replace(/\s*\((not uploaded|photo not kept|not saved)\)/, "").slice(0, 46))}</small><input type="file" accept="image/*" capture="environment" hidden data-retake="${rt[0].key}"></label>` : ""}
+        <button class="sb-fab-btn cam" data-opencam>📸 Camera<small>square guide · tap tap tap</small></button>
         ${full ? `<div class="sb-fab-btn next off" aria-disabled="true">⏳ Wait — queue full<small>${total} of ${S.server.limit} · unlocks automatically</small></div>`
           : `<label class="sb-fab-btn next">📷 Next photo<input type="file" accept="image/*" capture="environment" hidden data-scan></label>`}
       </div></div>`;
@@ -399,7 +487,7 @@
   }
   function onClick(e) {
     const t = e.target, R = S.review;
-    if (t.closest && t.closest("[data-proj]")) { const id = t.closest("[data-proj]").dataset.proj; S.project = S.projects.find((p) => p.id === id); rememberProject(S.project && !S.project.legacy ? id : ""); S.pick.clear(); S.data = null; draw(); pollQueue(); return load(); }
+    if (t.closest && t.closest("[data-proj]")) { const id = t.closest("[data-proj]").dataset.proj; S.project = S.projects.find((p) => p.id === id); rememberProject(S.project && !S.project.legacy ? id : ""); S.pick.clear(); S.data = null; draw(); pollQueue(); resumeKept(); return load(); }
     if (t.hasAttribute("data-changeproj")) { S.project = null; rememberProject(""); S.Q = { items: S.Q.items, running: S.Q.running, saved: 0, dups: 0, fixed: 0 }; return loadProjects().then(draw); }
     if (t.hasAttribute("data-newproj")) {
       const name = S.host.querySelector(".sb-newproj").value.trim(); S.projErr = "";
@@ -508,6 +596,18 @@
     color:#fff;box-shadow:0 14px 34px -12px rgba(0,0,0,.55);user-select:none;-webkit-tap-highlight-color:transparent}
   .sb-fab-btn.next{background:linear-gradient(135deg,var(--a),color-mix(in srgb,var(--a) 70%,#000))}
   .sb-fab-btn.next.off{background:#8C97A8;cursor:not-allowed;box-shadow:none}.sb-fab-msg.busy{color:#C9A227}
+  .sb-fab-btn.cam{background:linear-gradient(135deg,#4C8DF6,#2F62C9);border:0;font:inherit;font-weight:800;font-size:17px}
+  .sb-cam-full{position:fixed;inset:0;z-index:2147483600;background:#000}
+  .sb-cam-full video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .sb-cam-guide{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);width:min(78vw,62vh);aspect-ratio:1;border:3px solid #fff;border-radius:18px;
+    box-shadow:0 0 0 100vmax rgba(0,0,0,.45);pointer-events:none}
+  .sb-cam-guide span{position:absolute;top:-34px;left:0;right:0;text-align:center;color:#fff;font:600 14px ui-sans-serif,-apple-system,sans-serif;text-shadow:0 1px 4px #000}
+  .sb-cam-top{position:absolute;top:calc(env(safe-area-inset-top,0px) + 12px);left:12px;right:12px;display:flex;gap:10px;align-items:center;color:#fff;font:600 14px ui-sans-serif,-apple-system,sans-serif}
+  .sb-cam-top button{width:44px;height:44px;border-radius:12px;border:0;background:rgba(0,0,0,.5);color:#fff;font-size:18px}.sb-cam-count{flex:1;text-align:center;text-shadow:0 1px 4px #000}
+  .sb-cam-bottom{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 26px);left:0;right:0;display:flex;justify-content:center}
+  .sb-shutter{width:84px;height:84px;border-radius:50%;border:6px solid #fff;background:rgba(255,255,255,.25);cursor:pointer}.sb-shutter:active{background:#fff;transform:scale(.94)}
+  .sb-cam-flash{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);color:#fff;font:800 30px ui-sans-serif,-apple-system,sans-serif;opacity:0;transition:opacity .2s;text-shadow:0 2px 8px #000;pointer-events:none}
+  .sb-cam-flash.show{opacity:1}.sb-cam-flash.bad{color:#FFD24A;font-size:20px}
   .sb-fab-btn.retake{background:linear-gradient(135deg,#F2545B,#C7343B)}
   .sb-fab-btn small{font-size:11px;font-weight:600;opacity:.9;max-width:92%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sb-fab-btn:active{transform:scale(.97)}
@@ -558,7 +658,7 @@
     if (!document.getElementById("sb-css")) { const st = document.createElement("style"); st.id = "sb-css"; st.textContent = CSS; document.head.appendChild(st); }
     document.body.classList.add("sb-on");          // make room for the big buttons
     S.host = host; host.addEventListener("click", onClick); host.addEventListener("change", onChange); host.addEventListener("input", onInput);
-    draw(); loadProjects().then(() => (S.project ? load() : draw())).then(pollQueue);
+    draw(); loadProjects().then(() => (S.project ? load() : draw())).then(pollQueue).then(resumeKept);
   }
   function unmount() { S.host = null; document.body.classList.remove("sb-on"); drawFab(); }
   window.MYDAYScanBox = { mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };
