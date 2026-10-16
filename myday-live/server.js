@@ -923,12 +923,19 @@ const server = http.createServer(async (req, res) => {
     if (known) return json(res, 200, { jobId: uid, status: known.status });           // a retried upload: same ticket
     const img = String(b.image || "").replace(/^data:[^,]+,/, "");
     if (img.length < 100 || img.length > 8e6) return json(res, 400, { error: "No usable photo" });
+    // Full queue: not refused for good — the phone keeps the photo and sends it when there's room.
+    if (scanBusy() >= SCAN_QUEUE_LIMIT) return json(res, 429, { error: "Server busy", busy: true, queue: scanBusy(), limit: SCAN_QUEUE_LIMIT });
     const proj = scanbox.project(DATA_DIR, String(b.projectId || ""));
     if (proj && (proj.locked || proj.archived)) return json(res, 423, { error: `${proj.name} is locked for scanning — choose another project`, locked: true });
     const projectId = proj ? proj.id : null;
     scanJobs.set(key, { status: "queued", at: Date.now(), me, img, mime: b.mime, projectId });
     pumpScans();
     return json(res, 200, { jobId: uid, status: "queued", ahead: scanQueueLength() });
+  }
+  if (p === "/api/scanbox/queue" && req.method === "GET") {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    return json(res, 200, { queue: scanBusy(), limit: SCAN_QUEUE_LIMIT });
   }
   if (p === "/api/scanbox/job" && req.method === "GET") {
     const me = userFromSession(sessionFor(req));
@@ -1001,6 +1008,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, p.endsWith("restore") ? { restored: scanbox.restore(DATA_DIR, me, ids) } : { deleted: scanbox.purge(DATA_DIR, me, ids) });
       }
       if (p === "/api/scanbox/edit" && req.method === "POST") { const b = (await rb()) || {}; const r = scanbox.edit(DATA_DIR, me, owner, String(b.id), String(b.field), b.value); return json(res, r.error ? 400 : 200, r); }
+      if (p === "/api/scanbox/bulk" && req.method === "POST") { const b = (await rb()) || {}; const r = scanbox.bulk(DATA_DIR, me, owner, (b.ids || []).map(String).slice(0, 5000), String(b.field), b.value); return json(res, r.error ? 400 : 200, r); }
       if (p === "/api/scanbox/hide" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, { hidden: scanbox.hide(DATA_DIR, me, owner, (b.ids || []).map(String)) }); }
       const ph = p.match(/^\/api\/scanbox\/photo\/([a-f0-9]{18})$/);
       if (ph && req.method === "GET") {
@@ -1473,6 +1481,8 @@ const scanJobs = new Map();                       // "user:uploadId" → { statu
 let scanRunning = 0;
 const SCAN_CONCURRENCY = Math.max(1, Number(process.env.SCAN_CONCURRENCY || 6));
 const scanQueueLength = () => [...scanJobs.values()].filter((j) => j.status === "queued").length;
+const scanBusy = () => [...scanJobs.values()].filter((j) => j.status === "queued" || j.status === "reading").length;   // waiting + being read, all users
+const SCAN_QUEUE_LIMIT = Math.max(4, Number(process.env.SCAN_QUEUE_LIMIT || 20));
 function pumpScans() {
   while (scanRunning < SCAN_CONCURRENCY) {
     const next = [...scanJobs.values()].filter((j) => j.status === "queued").sort((a, b) => a.at - b.at)[0];

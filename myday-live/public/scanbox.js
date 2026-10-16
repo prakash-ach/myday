@@ -108,7 +108,8 @@
       try {
         const r = await fetch(url, body ? { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : { credentials: "same-origin" });
         if (r.status === 401) { location.reload(); throw new Error("signed out"); }
-        if (r.status < 500 && r.status !== 429 && r.status !== 408) { const t = await r.text(); let j; try { j = JSON.parse(t); } catch (e) { j = { error: `HTTP ${r.status}` }; } return { ok: r.ok, status: r.status, j }; }
+        if (r.status === 429) { if (it) { it.waiting = true; it.msg = "server queue full — will send when there's room"; draw(); } await nap(4000); continue; }
+        if (r.status < 500 && r.status !== 408) { const t = await r.text(); let j; try { j = JSON.parse(t); } catch (e) { j = { error: `HTTP ${r.status}` }; } return { ok: r.ok, status: r.status, j }; }
       } catch (e) { if (e.message === "signed out") throw e; }
       if (it) { it.waiting = true; it.msg = navigator.onLine === false ? "offline — will send when the connection is back" : "waiting for the connection — retrying"; draw(); }
       await nap(Math.min(30000, 1500 * 2 ** Math.min(n, 5)));
@@ -181,18 +182,34 @@
     fabHost.style.cssText = `--a:${(c && c.accent) || "#2FBF87"};padding:0;margin:0`;
     fabHost.innerHTML = actionBar();
   }
+  /* How full is the server's queue (all users)? Checked every few seconds while scanning. */
+  S.server = { queue: 0, limit: 20 };
+  const localPending = () => S.Q.items.filter((x) => ["checking", "waiting"].includes(x.status) || (x.status === "reading" && x.waiting)).length;
+  const isFull = () => S.server.queue + localPending() >= S.server.limit;
+  let queueT = null;
+  async function pollQueue() {
+    clearTimeout(queueT);
+    if (!S.host || !S.project) return;
+    try { const r = await fetch("/api/scanbox/queue", { credentials: "same-origin" }); if (r.ok) { const j = await r.json(); const was = isFull(); S.server = j; if (was !== isFull()) drawFab(); else updateFabMsg(); } } catch (e) {}
+    queueT = setTimeout(pollQueue, isFull() ? 2000 : 4000);
+  }
+  function updateFabMsg() { if (fabHost && isFull()) drawFab(); }
+
   /* Big, always-there buttons: next photo, and retake when one is needed. */
   function actionBar() {
     if (!S.rapid) return "";
     const rt = S.Q.items.filter((x) => x.status === "retake" || x.status === "error");
     const last = S.Q.items.find((x) => ["done", "retake", "error"].includes(x.status));
     const busy = S.Q.items.filter((x) => ["checking", "waiting", "reading"].includes(x.status)).length;
-    const line = last ? (last.status === "done" ? `✓ ${esc(last.msg.split(" · ").slice(0, 2).join(" · "))}` : `⚠ ${esc(last.msg)}`) : "Point at the box labels and tap 📷";
+    const full = isFull(), total = S.server.queue + localPending();
+    const line = full ? `⏳ Server busy — ${total} photos in the queue (limit ${S.server.limit}). Wait a moment, the button unlocks by itself.`
+      : last ? (last.status === "done" ? `✓ ${esc(last.msg.split(" · ").slice(0, 2).join(" · "))}` : `⚠ ${esc(last.msg)}`) : "Point at the box labels and tap 📷";
     return `<div class="sb-fab">
-      <div class="sb-fab-msg ${last && last.status !== "done" ? "bad" : ""}">${line}${busy ? ` <span>· ${busy} reading in the background</span>` : ""}</div>
+      <div class="sb-fab-msg ${full ? "busy" : last && last.status !== "done" ? "bad" : ""}">${line}${busy ? ` <span>· ${busy} reading in the background</span>` : ""}</div>
       <div class="sb-fab-row">
         ${rt.length ? `<label class="sb-fab-btn retake">↻ Retake${rt.length > 1 ? ` (${rt.length})` : ""}<small>${esc((rt[0].msg || "").replace(/\s*\((not uploaded|photo not kept|not saved)\)/, "").slice(0, 46))}</small><input type="file" accept="image/*" capture="environment" hidden data-retake="${rt[0].key}"></label>` : ""}
-        <label class="sb-fab-btn next">📷 Next photo<input type="file" accept="image/*" capture="environment" hidden data-scan></label>
+        ${full ? `<div class="sb-fab-btn next off" aria-disabled="true">⏳ Wait — queue full<small>${total} of ${S.server.limit} · unlocks automatically</small></div>`
+          : `<label class="sb-fab-btn next">📷 Next photo<input type="file" accept="image/*" capture="environment" hidden data-scan></label>`}
       </div></div>`;
   }
 
@@ -297,7 +314,7 @@
     if (!S.data) return [];
     const f = S.f, q = f.q.trim().toLowerCase();
     return S.data.rows.filter((r) => (!f.from || r.at.slice(0, 10) >= f.from) && (!f.to || r.at.slice(0, 10) <= f.to) && (!f.who || (r.byName || r.by) === f.who)
-      && (!f.status || (f.status === "check" ? [r.checks.imei1, r.checks.imei2].includes("bad") || (!r.imei1 && !r.serial) : r.checks.imei1 === "barcode" || r.checks.imei1 === "valid"))
+      && (!f.status || (f.status === "storage" ? !r.storage : f.status === "ram" ? !r.ram : f.status === "check" ? [r.checks.imei1, r.checks.imei2].includes("bad") || (!r.imei1 && !r.serial) : r.checks.imei1 === "barcode" || r.checks.imei1 === "valid"))
       && (!q || [r.brand, r.model, r.colour, r.imei1, r.imei2, r.serial, r.productModel, r.byName].some((x) => String(x || "").toLowerCase().includes(q))));
   }
   async function exportXlsx() {
@@ -308,7 +325,7 @@
   }
 
   /* ---------- drawing ---------- */
-  const F_EDIT = [["brand", "Brand"], ["model", "Model"], ["colour", "Colour"], ["ram", "RAM"], ["storage", "Storage"], ["imei1", "IMEI 1"], ["imei2", "IMEI 2"], ["serial", "Serial"], ["productModel", "Product model"]];
+  const F_EDIT = [["brand", "Brand"], ["model", "Model"], ["colour", "Colour"], ["ram", "RAM"], ["storage", "Storage"], ["imei1", "IMEI 1"], ["imei2", "IMEI 2"], ["serial", "Serial"], ["productModel", "Product model"], ["ean", "Barcode no."]];
   function reviewHtml() {
     const R = S.review; if (!R) return "";
     const live = (b, f) => (f === "imei1" || f === "imei2") ? mark(imeiState(b[f], b.how && b.how[f])) : f === "serial" && b.serial ? mark(b.how && b.how.serial === "barcode" ? "barcode" : "read") : "";
@@ -333,17 +350,23 @@
       <input type="search" data-f="q" placeholder="Search model, IMEI, serial…" value="${esc(S.f.q)}" aria-label="Search">
       <label>From <input type="date" data-f="from" value="${esc(S.f.from)}"></label><label>To <input type="date" data-f="to" value="${esc(S.f.to)}"></label>
       ${D.owner ? `<label>Scanned by <select data-f="who"><option value="">Everyone</option>${people.map((p) => `<option ${S.f.who === p ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>` : ""}
-      <label>Status <select data-f="status"><option value="">All</option><option value="check" ${S.f.status === "check" ? "selected" : ""}>⚠ Needs checking</option><option value="ok" ${S.f.status === "ok" ? "selected" : ""}>✓ IMEI verified</option></select></label>
+      <label>Status <select data-f="status"><option value="">All</option><option value="check" ${S.f.status === "check" ? "selected" : ""}>⚠ Needs checking</option><option value="ok" ${S.f.status === "ok" ? "selected" : ""}>✓ IMEI verified</option><option value="storage" ${S.f.status === "storage" ? "selected" : ""}>Storage missing</option><option value="ram" ${S.f.status === "ram" ? "selected" : ""}>RAM missing</option></select></label>
       <span class="sb-dim" style="margin-left:auto">${list.length} of ${D.rows.length}${D.owner ? " · you see everyone's scans" : " · your scans"}</span>
       <button class="sb-sec" data-export ${list.length ? "" : "disabled"}>⬇ Excel</button>
       ${D.owner ? `<label class="sb-tog" style="margin:0"><input type="checkbox" data-showremoved ${S.showRemoved ? "checked" : ""}> Show removed${D.removed ? ` (${D.removed})` : ""}</label>` : ""}
       ${(() => { const sel = D.rows.filter((r) => S.pick.has(r.id)), live = sel.filter((r) => !r.hidden).length, gone = sel.filter((r) => r.hidden).length;
         return `${live ? `<button class="sb-sec warn" data-hide>Remove ${live}</button>` : ""}${gone && D.owner ? `<button class="sb-sec" data-restore>Restore ${gone}</button><button class="sb-sec danger" data-purge>Delete ${gone} permanently</button>` : ""}`; })()}</div>
+      ${(() => { const by = {}; D.rows.filter((r) => !r.hidden).forEach((r) => { const k = r.byName || r.by; by[k] = (by[k] || 0) + 1; });
+        const e = Object.entries(by).sort((a, b) => b[1] - a[1]);
+        return e.length > 1 || D.owner ? `<div class="sb-people">${e.map(([k, n]) => `<span><b>${esc(k)}</b> ${n}</span>`).join("")}${D.rows.some((r) => !r.storage && !r.hidden) ? `<span class="sb-miss">${D.rows.filter((r) => !r.storage && !r.hidden).length} missing storage</span>` : ""}</div>` : ""; })()}
+      ${S.pick.size ? `<div class="sb-bulk"><b>${S.pick.size} selected</b> · set
+        <select data-bulkf><option value="storage">Storage</option><option value="ram">RAM</option><option value="model">Model</option><option value="colour">Colour</option><option value="brand">Brand</option></select>
+        to <input data-bulkv placeholder="e.g. 256GB"><button class="sb-pri" data-bulk>Apply to ${S.pick.size}</button></div>` : ""}
       <div class="sb-wrap"><table class="sb-table"><thead><tr><th><input type="checkbox" data-all aria-label="Select all"></th><th>Scanned</th><th>By</th><th>Brand</th><th>Model</th><th>Colour</th><th>RAM</th><th>Storage</th><th>IMEI 1</th><th>IMEI 2</th><th>Serial</th><th>Product model</th><th></th></tr></thead><tbody>
       ${list.slice(0, 500).map((r) => S.edit === r.id ? `<tr class="editing"><td></td><td colspan="13"><div class="sb-fields">${F_EDIT.map(([f, l]) => `<label>${l}<input data-ef="${f}" value="${esc(r[f])}"></label>`).join("")}</div>
           <div class="sb-row"><button class="sb-pri" data-esave="${r.id}">Save changes</button><button class="sb-sec" data-ecancel>Cancel</button>${(r.edits || []).length ? `<span class="sb-dim">${r.edits.length} earlier edit(s): ${esc(r.edits.slice(-3).map((e) => `${e.field} ${e.from || "—"}→${e.to || "—"} by ${e.by}`).join("; "))}</span>` : ""}</div></td></tr>`
         : `<tr class="${r.hidden ? "removed" : ""}"><td><input type="checkbox" data-pick="${r.id}" ${S.pick.has(r.id) ? "checked" : ""}></td><td>${esc(r.at.slice(0, 10))}<small>${esc(r.at.slice(11, 16))}</small>${r.hidden ? `<small class="sb-rm">Removed by ${esc(r.hidden.name || r.hidden.by)} ${esc(String(r.hidden.at).slice(0, 10))}</small>` : ""}</td><td>${esc(r.byName || r.by)}</td>
-          <td><b>${esc(r.brand)}</b></td><td>${esc(r.model)}</td><td>${esc(r.colour)}</td><td>${esc(r.ram)}</td><td>${esc(r.storage)}</td>
+          <td><b>${esc(r.brand)}</b></td><td>${esc(r.model)}</td><td>${esc(r.colour)}</td><td>${esc(r.ram) || '<span class="sb-miss">—</span>'}${r.filled && r.filled.ram ? `<small>${esc(r.filled.ram)}</small>` : ""}</td><td>${esc(r.storage) || '<span class="sb-miss">missing</span>'}${r.filled && r.filled.storage ? `<small>${esc(r.filled.storage)}</small>` : ""}</td>
           <td class="mono">${mark(r.checks.imei1)} ${esc(r.imei1 || "—")}</td><td class="mono">${mark(r.checks.imei2)} ${esc(r.imei2 || "—")}</td><td class="mono">${mark(r.checks.serial)} ${esc(r.serial || "—")}</td>
           <td class="mono">${esc(r.productModel)}</td><td>${r.photoId ? `<button class="sb-link" data-photo="${esc(r.photoId)}">Photo</button>` : ""} <button class="sb-link" data-edit="${r.id}">Edit</button>${(r.edits || []).length ? `<small>edited</small>` : ""}</td></tr>`).join("")
         || `<tr><td colspan="14" class="sb-empty">${D.rows.length ? "Nothing matches these filters." : "No boxes scanned yet. Tap 📷 Scan boxes to start."}</td></tr>`}</tbody></table></div>
@@ -357,7 +380,8 @@
       drawFab(); return;
     }
     S.host.innerHTML = `<div class="sb ${c && c.isDark === false ? "light" : "dark"}" style="--a:${(c && c.accent) || "#2FBF87"}">
-      <div class="sb-projbar"><button class="sb-sec" data-changeproj>← Projects</button><span>Project</span><b>${S.project.locked ? "🔒 " : ""}${esc(S.project.name)}</b></div>
+      <div class="sb-projbar"><button class="sb-sec" data-changeproj>← Projects</button><span>Project</span><b>${S.project.locked ? "🔒 " : ""}${esc(S.project.name)}</b>
+        ${S.isOwner && !S.project.legacy ? `<span class="sb-defs">If a label has none, use RAM <input data-defram value="${esc((S.project.defaults || {}).ram || "")}" placeholder="—"> Storage <input data-defsto value="${esc((S.project.defaults || {}).storage || "")}" placeholder="—"><button class="sb-link" data-savedefaults>Save</button></span>` : ""}</div>
       ${S.project.locked ? `<div class="sb-panel sb-lockbanner">🔒 Scanning is locked for this project. You can still view and export it. <button class="sb-lock" data-lock="${esc(S.project.id)}">🔓 Unlock scanning</button></div>` : ""}
       <div class="sb-top"><div><h1>Scan Boxes</h1><p class="sb-dim">Photo of one box or a whole stack → brand, model, colour, RAM, storage, IMEIs and serial for each. Every scan is saved with who and when.</p></div>
         <label class="sb-pri sb-cam">📷 Scan boxes<input type="file" accept="image/*" capture="environment" multiple hidden data-scan></label>
@@ -369,13 +393,23 @@
   }
   function onClick(e) {
     const t = e.target, R = S.review;
-    if (t.closest && t.closest("[data-proj]")) { const id = t.closest("[data-proj]").dataset.proj; S.project = S.projects.find((p) => p.id === id); rememberProject(S.project && !S.project.legacy ? id : ""); S.pick.clear(); S.data = null; draw(); return load(); }
+    if (t.closest && t.closest("[data-proj]")) { const id = t.closest("[data-proj]").dataset.proj; S.project = S.projects.find((p) => p.id === id); rememberProject(S.project && !S.project.legacy ? id : ""); S.pick.clear(); S.data = null; draw(); pollQueue(); return load(); }
     if (t.hasAttribute("data-changeproj")) { S.project = null; rememberProject(""); S.Q = { items: S.Q.items, running: S.Q.running, saved: 0, dups: 0, fixed: 0 }; return loadProjects().then(draw); }
     if (t.hasAttribute("data-newproj")) {
       const name = S.host.querySelector(".sb-newproj").value.trim(); S.projErr = "";
       return post("/api/scanbox/projects", { name }).then(async (x) => { if (!x.ok) { S.projErr = x.j.error; return draw(); } await loadProjects(); draw(); });
     }
     if (t.dataset.rename) { const p = S.projects.find((x) => x.id === t.dataset.rename); const name = prompt("Rename project", p.name); if (!name) return; return post("/api/scanbox/projects", { id: p.id, name }).then(() => loadProjects()).then(draw); }
+    if (t.hasAttribute("data-bulk")) {
+      const field = S.host.querySelector("[data-bulkf]").value, value = S.host.querySelector("[data-bulkv]").value.trim();
+      if (!value) return;
+      if (!confirm(`Set ${field} to "${value}" on ${S.pick.size} row(s)? Each change is logged.`)) return;
+      return post("/api/scanbox/bulk", { ids: [...S.pick], field, value }).then((x) => { S.pick.clear(); const c = ctx(); c && c.setToast && c.setToast(`Updated ${x.j.changed} row(s)`); load(); });
+    }
+    if (t.hasAttribute("data-savedefaults")) {
+      const ram = S.host.querySelector("[data-defram]").value, storage = S.host.querySelector("[data-defsto]").value;
+      return post("/api/scanbox/projects", { id: S.project.id, defaults: { ram, storage } }).then(async () => { await loadProjects(); S.project = S.projects.find((x) => x.id === S.project.id) || S.project; const c = ctx(); c && c.setToast && c.setToast("Project defaults saved"); load(); });
+    }
     if (t.dataset.lock) {
       const p = S.projects.find((x) => x.id === t.dataset.lock);
       if (!p.locked && !confirm(`Lock "${p.name}" for scanning?\n\nIt disappears from everyone else's list and new photos into it are refused. You can unlock it any time.`)) return;
@@ -414,7 +448,13 @@
   }
   function onChange(e) {
     const t = e.target, R = S.review;
-    if (t.hasAttribute("data-scan")) { const files = [...t.files]; t.value = ""; if (files.length) (S.rapid ? enqueue(files) : scan(files)); return; }
+    if (t.hasAttribute("data-scan")) {
+      let files = [...t.files]; t.value = ""; if (!files.length) return;
+      // Choosing many from the gallery: take only what fits in the queue right now.
+      const room = Math.max(0, S.server.limit - S.server.queue - localPending());
+      if (S.rapid && files.length > room) { alert(`The server queue has room for ${room} more photo${room === 1 ? "" : "s"} right now (limit ${S.server.limit} across everyone). ${room ? `Taking the first ${room}; ` : ""}choose the rest in a moment.`); files = files.slice(0, room); }
+      if (files.length) (S.rapid ? enqueue(files) : scan(files)); return;
+    }
     if (t.hasAttribute("data-rapid")) { S.rapid = t.checked; return draw(); }
     if (t.dataset.retake) {           // the retake replaces that item
       const files = [...t.files]; t.value = ""; if (!files.length) return;
@@ -461,6 +501,7 @@
   .sb-fab-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:58px;border-radius:18px;cursor:pointer;font-weight:800;font-size:17px;
     color:#fff;box-shadow:0 14px 34px -12px rgba(0,0,0,.55);user-select:none;-webkit-tap-highlight-color:transparent}
   .sb-fab-btn.next{background:linear-gradient(135deg,var(--a),color-mix(in srgb,var(--a) 70%,#000))}
+  .sb-fab-btn.next.off{background:#8C97A8;cursor:not-allowed;box-shadow:none}.sb-fab-msg.busy{color:#C9A227}
   .sb-fab-btn.retake{background:linear-gradient(135deg,#F2545B,#C7343B)}
   .sb-fab-btn small{font-size:11px;font-weight:600;opacity:.9;max-width:92%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sb-fab-btn:active{transform:scale(.97)}
@@ -476,6 +517,11 @@
   .sb-proj.locked{border-color:rgba(242,84,91,.45)}
   .sb-lock{border:1px solid var(--line);background:var(--chip);border-radius:9px;padding:5px 10px;font-size:12.5px;font-weight:700;cursor:pointer;color:#F2545B}
   .sb-lock.on{color:#22C55E}.sb-lockbanner{border-color:rgba(242,84,91,.5);display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:var(--ink)}
+  .sb-miss{color:#C9A227;font-size:12px;font-weight:600}.sb-table td small{display:block}
+  .sb-people{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px}.sb-people span{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12.5px;color:var(--muted)}.sb-people b{color:var(--ink)}
+  .sb-bulk{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 12px;margin-bottom:8px;border:1px solid var(--a);border-radius:12px;background:var(--card);font-size:13px}
+  .sb-bulk select,.sb-bulk input{border:1px solid var(--line);background:var(--chip);border-radius:8px;padding:6px 8px;color:var(--ink)}
+  .sb-defs{margin-left:auto;display:flex;gap:6px;align-items:center;font-size:12px;flex-wrap:wrap}.sb-defs input{width:70px;border:1px solid var(--line);background:var(--chip);border-radius:8px;padding:4px 7px;color:var(--ink)}
   .sb-arch summary{cursor:pointer;color:var(--muted);margin:6px 0 10px}
   .sb-tog{display:flex;gap:7px;align-items:center;font-size:12.5px;color:var(--muted);margin:0 0 10px}
   .sb-stat{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}.sb-stat b{color:var(--ink)}.sb-stat.ok b{color:#22C55E}.sb-stat.bad{border-color:#F2545B;color:#F2545B}
@@ -506,7 +552,7 @@
     if (!document.getElementById("sb-css")) { const st = document.createElement("style"); st.id = "sb-css"; st.textContent = CSS; document.head.appendChild(st); }
     document.body.classList.add("sb-on");          // make room for the big buttons
     S.host = host; host.addEventListener("click", onClick); host.addEventListener("change", onChange); host.addEventListener("input", onInput);
-    draw(); loadProjects().then(() => (S.project ? load() : draw()));
+    draw(); loadProjects().then(() => (S.project ? load() : draw())).then(pollQueue);
   }
   function unmount() { S.host = null; document.body.classList.remove("sb-on"); drawFab(); }
   window.MYDAYScanBox = { mount, unmount, _useBarcodes: useBarcodes, _luhn: luhn, _rotCanvas: rotCanvas };

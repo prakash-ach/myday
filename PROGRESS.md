@@ -751,6 +751,35 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   list showing only open projects; direct upload 423; owner banner; unlock
   restores it for staff.
 
+### 16 October 2026 — Scan Boxes: storage without a manifest
+- No manifests come with lots, so missing storage/RAM is filled from the boxes:
+  the AI also reads the 13-digit retail barcode number (`ean`); boxes with the
+  same number share model/colour/RAM/storage, so any box that shows them
+  teaches the rest ("from barcode"). New rows are filled when saved; older rows
+  are filled on display/export only (not rewritten).
+- Project defaults (owner, in the project bar): RAM/storage used only where a
+  label has none and no barcode match ("project default").
+- Filters "Storage missing" / "RAM missing"; bulk edit (select rows → set
+  Storage/RAM/Model/Colour/Brand), each change logged with bulk:true;
+  per-person counts per project.
+- Tested: barcode learning, default fallback, display-only fill of an old row
+  (stored still blank), bulk edit + log, and the screen.
+
+### 16 October 2026 — Scan Boxes: cap the shared queue (20)
+- Server limit on photos waiting + being read across all users
+  (SCAN_QUEUE_LIMIT, default 20). `/api/scanbox/queue` reports it; uploads
+  beyond it get 429 {busy} and the phone keeps the photo and retries (never
+  lost).
+- Phones poll the queue every 2–4 s while a project is open; when server queue
+  + this phone's not-yet-uploaded photos ≥ limit, 📷 Next photo turns grey
+  ("⏳ Wait — queue full · N of 20 · unlocks automatically") and unlocks on its
+  own. Choosing many from the gallery takes only what fits, with a message.
+- Note: each phone sends at most 4 photos at a time, so the cap is reached
+  with several people shooting at once.
+- Tested (limit 6, slow AI): gallery pick of 8 trimmed to 6; with two users
+  filling the queue the third user's button locked at 6/6; all unlocked ~4 s
+  after it drained; held photos sent afterwards.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

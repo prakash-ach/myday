@@ -70,13 +70,34 @@ function modelOnly(brand, model) {
   }
   return m;
 }
+/* Same retail barcode = same model, colour, RAM and storage. Learn it from any box that shows them. */
+function eanMap(rows) {
+  const m = new Map();
+  for (const r of rows) if (!r.hidden && r.ean && (r.storage || r.ram) && !(r.filled && (r.filled.storage || r.filled.ram))) {
+    const x = m.get(r.ean) || {}; if (r.storage && !x.storage) x.storage = r.storage; if (r.ram && !x.ram) x.ram = r.ram; m.set(r.ean, x);
+  }
+  return m;
+}
+/* Fill blank RAM/storage: from the barcode first, then the project's default. Marked, never silent. */
+function fillBlanks(r, eans, proj) {
+  const out = { ...r }, filled = { ...(r.filled || {}) };
+  for (const f of ["storage", "ram"]) {
+    if (out[f]) continue;
+    const e = r.ean && eans.get(r.ean);
+    if (e && e[f]) { out[f] = e[f]; filled[f] = "from barcode"; }
+    else if (proj && proj.defaults && proj.defaults[f]) { out[f] = proj.defaults[f]; filled[f] = "project default"; }
+  }
+  if (Object.keys(filled).length) out.filled = filled;
+  return out;
+}
 const view = (r) => ({ ...r, brand: canonBrand(r.brand), model: modelOnly(r.brand, r.model) });     // display only
 
-const FIELDS = ["brand", "model", "colour", "ram", "storage", "imei1", "imei2", "serial", "productModel", "eid", "note"];
+const FIELDS = ["brand", "model", "colour", "ram", "storage", "imei1", "imei2", "serial", "productModel", "ean", "eid", "note"];
 function normalise(r) {
   const o = {};
   for (const f of FIELDS) o[f] = clean(r[f], f === "note" ? 300 : 60);
   for (const f of ["imei1", "imei2"]) o[f] = digits(o[f]).slice(0, 17);
+  o.ean = digits(o.ean).length >= 12 ? digits(o.ean).slice(0, 14) : "";
   o.ram = o.ram.replace(/\s+/g, "").toUpperCase().replace(/G$/, "GB"); o.storage = o.storage.replace(/\s+/g, "").toUpperCase().replace(/G$/, "GB");
   o.serial = o.serial.replace(/\s+/g, "").toUpperCase();
   o.brand = canonBrand(o.brand); o.model = modelOnly(o.brand, o.model);
@@ -88,7 +109,7 @@ function save(dir, { photoId, rows, projectId }, user) {
   const d = read(dir), saved = [], skipped = [];
   const proj = projectId && project(dir, projectId) ? projectId : null;
   for (const raw of (rows || []).slice(0, 40)) {
-    const r = { ...normalise(raw), projectId: proj };
+    const r = fillBlanks({ ...normalise(raw), projectId: proj }, eanMap(d.rows.concat(saved)), proj ? project(dir, proj) : null);
     if (!r.model && !r.imei1 && !r.serial) { skipped.push({ row: r, reason: "empty — no model, IMEI or serial" }); continue; }
     const ids = [r.imei1, r.imei2, r.serial].filter((x) => x && x.length >= 6);
     const inBatch = saved.find((x) => [x.imei1, x.imei2, x.serial].some((v) => v && ids.includes(v)));
@@ -112,7 +133,9 @@ function list(dir, me, owner, withRemoved, projectId) {
   if (projectId !== undefined) d.rows = d.rows.filter((r) => (r.projectId || "none") === projectId);
   // Older rows are shown cleaned (brand once, model without it); what's stored isn't rewritten.
   // Removed rows only for the owner, and only when asked for.
-  return d.rows.filter((r) => (!r.hidden || (owner && withRemoved)) && canSee(r, me, owner)).sort((a, b) => (a.at < b.at ? 1 : -1)).map(view);
+  const eans = eanMap(read(dir).rows), P = new Map(projects(dir).map((p) => [p.id, p]));
+  return d.rows.filter((r) => (!r.hidden || (owner && withRemoved)) && canSee(r, me, owner)).sort((a, b) => (a.at < b.at ? 1 : -1))
+    .map((r) => view(fillBlanks(r, eans, P.get(r.projectId))));
 }
 const removedCount = (dir, projectId) => read(dir).rows.filter((r) => r.hidden && (projectId === undefined || (r.projectId || "none") === projectId)).length;
 
@@ -132,6 +155,7 @@ function updateProject(dir, me, id, change) {
   const list = projects(dir), p = list.find((x) => x.id === id); if (!p) return { error: "not found" };
   if (change.name != null) { const n = clean(change.name, 80); if (!n) return { error: "Give the project a name" }; p.name = n; }
   if (change.archived != null) p.archived = change.archived ? { at: new Date().toISOString(), by: me.username } : undefined;
+  if (change.defaults) p.defaults = { ram: clean(change.defaults.ram, 10).replace(/\s+/g, "").toUpperCase(), storage: clean(change.defaults.storage, 10).replace(/\s+/g, "").toUpperCase() };
   if (change.locked != null) p.locked = change.locked ? { at: new Date().toISOString(), by: me.username } : undefined;   // scanning stopped
   saveProjects(dir, list); return { project: p };
 }
@@ -184,6 +208,19 @@ function edit(dir, me, owner, id, field, value) {
   if (field === "serial") r.checks.serial = next ? "typed" : "missing";
   write(dir, d);
   return { row: r };
+}
+/* Set one field on many rows at once (e.g. storage for a whole group); every change logged. */
+function bulk(dir, me, owner, ids, field, value) {
+  if (!["brand", "model", "colour", "ram", "storage"].includes(field)) return { error: "can't bulk-edit that" };
+  const d = read(dir); let n = 0;
+  for (const r of d.rows) {
+    if (!ids.includes(r.id) || r.hidden || !canSee(r, me, owner)) continue;
+    const next = normalise({ ...r, [field]: value })[field];
+    if (next === r[field]) continue;
+    r.edits = [...(r.edits || []), { at: new Date().toISOString(), by: me.username, field, from: r[field], to: next, bulk: true }];
+    r[field] = next; if (r.filled) delete r.filled[field]; n++;
+  }
+  write(dir, d); return { changed: n };
 }
 function hide(dir, me, owner, ids) {
   const d = read(dir); let n = 0;
@@ -245,4 +282,4 @@ function saveFromCloseup(dir, user, photoId, box, got, projectId) {
   return out.saved.length ? { saved: out.saved[0].id } : { duplicate: true };
 }
 
-module.exports = { project, projects, createProject, updateProject, projectList, saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };
+module.exports = { bulk, project, projects, createProject, updateProject, projectList, saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };

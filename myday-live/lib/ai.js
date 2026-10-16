@@ -346,7 +346,7 @@ Read only what's visible; if you can't tell the model, say so in "seen" and give
 /* ---------- 1e2. scan boxes: every phone box in a photo ---------- */
 async function scanBoxes(dir, userId, imageB64, mime) {
   const sys = `You read the labels on phone retail boxes in one photo (there may be one box or a stack of many).
-Reply with JSON only: {"boxes":[{"position":"where it is, e.g. top left","brand":"","model":"model WITHOUT the brand, e.g. Note 14 5G (brand Redmi), X7 Pro (brand POCO)","colour":"","ram":"e.g. 8GB","storage":"e.g. 256GB","imei1":"","imei2":"","serial":"the SN value","productModel":"e.g. 24094RAD4G","eid":"","box":[x,y,w,h],"confidence":0.0-1.0,"note":"anything you couldn't read"}]}
+Reply with JSON only: {"boxes":[{"position":"where it is, e.g. top left","brand":"","model":"model WITHOUT the brand, e.g. Note 14 5G (brand Redmi), X7 Pro (brand POCO)","colour":"","ram":"e.g. 8GB","storage":"e.g. 256GB","imei1":"","imei2":"","serial":"the SN value","productModel":"e.g. 24094RAD4G","ean":"the 13-digit retail barcode number printed under the product barcode, e.g. 6932554407582","eid":"","box":[x,y,w,h],"confidence":0.0-1.0,"note":"anything you couldn't read"}]}
 "box" is where that box's label is in the photo, as fractions of the width/height from the top-left (0–1).
 Boxes can be at ANY angle — sideways, upside down, tilted. Read them whatever their orientation, and add "rotation": how many degrees CLOCKWISE that label must be turned to read upright (0, 90, 180 or 270).
 If the photo is too blurry, dark or cut off to read any box, return {"boxes":[],"retake":"short reason"}.
@@ -358,7 +358,7 @@ Rules: one entry per box you can see, left-to-right, top-to-bottom. Copy numbers
     box: Array.isArray(b.box) && b.box.length === 4 && b.box.every((v) => Number.isFinite(+v)) ? b.box.map((v) => Math.max(0, Math.min(1, +v))) : null,
     position: clip(b.position, 40), brand: clip(b.brand, 30), model: clip(b.model, 60), colour: clip(b.colour, 40), ram: clip(b.ram, 10), storage: clip(b.storage, 10),
     imei1: String(b.imei1 || "").replace(/\D/g, "").slice(0, 17), imei2: String(b.imei2 || "").replace(/\D/g, "").slice(0, 17), serial: clip(b.serial, 40).replace(/\s+/g, ""),
-    productModel: clip(b.productModel, 30), eid: String(b.eid || "").replace(/\D/g, "").slice(0, 32), confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0)), note: clip(b.note, 200),
+    productModel: clip(b.productModel, 30), ean: String(b.ean || "").replace(/\D/g, "").slice(0, 14), eid: String(b.eid || "").replace(/\D/g, "").slice(0, 32), confidence: Math.max(0, Math.min(1, Number(b.confidence) || 0)), note: clip(b.note, 200),
   }));
   return { boxes, retake: !boxes.length ? clip((out && out.retake) || "Couldn't read any box in this photo", 120) : "" };
 }
