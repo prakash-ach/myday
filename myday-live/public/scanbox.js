@@ -621,6 +621,7 @@
       ${(() => { const per = window.MYDAYTables ? window.MYDAYTables.rowsPer() : 20, last = Math.max(0, Math.ceil(list.length / per) - 1);
         S.sbPage = Math.min(S.sbPage || 0, last); S.sbPer = per;
         return list.length > per ? `<div class="sb-pager"><button class="sb-sec" data-sbpg="-1" ${S.sbPage ? "" : "disabled"}>‹ Prev</button> page ${S.sbPage + 1} of ${last + 1} · ${list.length} rows <button class="sb-sec" data-sbpg="1" ${S.sbPage < last ? "" : "disabled"}>Next ›</button></div>` : ""; })()}
+      ${S.project && S.project.scanType === "carton" ? cartonTable(list) : `
       <div class="sb-wrap"><table class="sb-table" data-own-pager><thead><tr><th><input type="checkbox" data-all aria-label="Select all"></th><th>Scanned</th><th>By</th><th>Brand</th><th>Model</th><th>Colour</th><th>RAM</th><th>Storage</th><th>IMEI 1</th><th>IMEI 2</th><th>Serial</th><th>Product model</th><th></th></tr>
       <tr class="sb-frow"><td></td><td><input type="date" data-f="from" value="${esc(S.f.from)}" aria-label="From date"><input type="date" data-f="to" value="${esc(S.f.to)}" aria-label="To date"></td>
         <td>${D.owner ? `<select data-f="who" aria-label="Scanned by"><option value="">Everyone</option>${people.map((p) => `<option ${S.f.who === p ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>` : ""}</td>
@@ -632,7 +633,22 @@
           <td class="mono">${mark(r.checks.imei1)} ${esc(r.imei1 || "—")}${r.checks.imei1 === "bad" ? ` <button class="sb-link" data-ok1="${r.id}" title="I checked the box — this IMEI is right">✓ It's right</button>` : r.checks.imei1 === "confirmed" ? `<small>checked by ${esc(r.checks.imei1By || "")} · <button class="sb-link" data-unok1="${r.id}">undo</button></small>` : ""}</td><td class="mono">${mark(r.checks.imei2)} ${esc(r.imei2 || "—")}${r.checks.imei2 === "bad" ? ` <button class="sb-link" data-ok2="${r.id}" title="I checked the box — this IMEI is right">✓ It's right</button> <button class="sb-link" data-ign2="${r.id}" title="Set IMEI 2 aside — IMEI 1 is what counts">⊘ Ignore</button>` : r.checks.imei2 === "ignored" || r.checks.imei2 === "confirmed" ? ` <button class="sb-link" data-unign2="${r.id}">undo</button>` : ""}</td><td class="mono">${mark(r.checks.serial)} ${esc(r.serial || "—")}</td>
           <td class="mono">${esc(r.productModel)}</td><td>${r.photoId ? `<button class="sb-link" data-photo="${esc(r.photoId)}">Photo</button>` : ""} <button class="sb-link" data-edit="${r.id}">Edit</button>${(r.edits || []).length ? `<small>edited</small>` : ""}</td></tr>`).join("")
         || `<tr><td colspan="14" class="sb-empty">${D.rows.length ? "Nothing matches these filters." : "No boxes scanned yet. Tap 📷 Scan boxes to start."}</td></tr>`}</tbody></table></div>
-      ${list.length > 500 ? `<p class="sb-dim">Showing the newest 500 — use the filters or Excel for the rest.</p>` : ""}`;
+      `}`;
+  }
+  /* Bulk-carton projects: a table made for carton labels (one row per serial). */
+  function cartonTable(list) {
+    const D = S.data, people = D.people || [], per = S.sbPer || 20, pg = S.sbPage || 0;
+    const rows = list.slice(pg * per, (pg + 1) * per);
+    return `<div class="sb-wrap"><table class="sb-table" data-own-pager><thead><tr><th><input type="checkbox" data-all aria-label="Select all"></th><th>Scanned</th><th>By</th><th>Brand</th><th>Product</th><th>Model</th><th>Serial</th><th>IMEI</th><th>Carton SSCC</th><th>GTIN</th><th>Count</th><th></th></tr>
+      <tr class="sb-frow"><td></td><td><input type="date" data-f="from" value="${esc(S.f.from)}" aria-label="From date"><input type="date" data-f="to" value="${esc(S.f.to)}" aria-label="To date"></td>
+        <td>${D.owner ? `<select data-f="who" aria-label="Scanned by"><option value="">Everyone</option>${people.map((p) => `<option ${S.f.who === p ? "selected" : ""}>${esc(p)}</option>`).join("")}</select>` : ""}</td>
+        <td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td>${S.f.from || S.f.to || S.f.who ? `<button class="sb-link" data-fclear>Clear</button>` : ""}</td></tr></thead><tbody>
+      ${rows.map((r) => `<tr class="${r.hidden ? "removed" : ""}"><td><input type="checkbox" data-pick="${r.id}" ${S.pick.has(r.id) ? "checked" : ""}></td>
+        <td>${esc(r.at.slice(0, 10))}<small>${esc(r.at.slice(11, 16))}</small></td><td>${esc(r.byName || r.by)}</td><td><b>${esc(r.brand)}</b></td>
+        <td class="mono">${esc(r.productModel || "—")}</td><td>${esc(r.model || "—")}</td><td class="mono"><b>${esc(r.serial || "—")}</b></td>
+        <td class="mono">${r.imei1 ? mark(r.checks.imei1) + " " + esc(r.imei1) : "—"}</td><td class="mono">${esc(r.sscc || "—")}</td><td class="mono">${esc(r.gtin || "—")}</td><td>${esc(r.cartonCount || "—")}</td>
+        <td>${r.photoId ? `<button class="sb-link" data-photo="${esc(r.photoId)}">Photo</button>` : ""} <button class="sb-link" data-edit="${r.id}">Edit</button></td></tr>`).join("")
+        || `<tr><td colspan="12" class="sb-empty">${D.rows.length ? "Nothing matches these filters." : "No cartons scanned yet. Open 📸 Camera and point it at a carton label."}</td></tr>`}</tbody></table></div>`;
   }
   function draw() {
     if (!S.host) return;

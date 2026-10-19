@@ -92,12 +92,13 @@ function fillBlanks(r, eans, proj) {
 }
 const view = (r) => ({ ...r, brand: canonBrand(r.brand), model: modelOnly(r.brand, r.model) });     // display only
 
-const FIELDS = ["brand", "model", "colour", "ram", "storage", "imei1", "imei2", "serial", "productModel", "ean", "eid", "note"];
+const FIELDS = ["brand", "model", "colour", "ram", "storage", "imei1", "imei2", "serial", "productModel", "ean", "eid", "note", "sscc", "gtin", "cartonCount"];
 function normalise(r) {
   const o = {};
   for (const f of FIELDS) o[f] = clean(r[f], f === "note" ? 300 : 60);
   for (const f of ["imei1", "imei2"]) o[f] = digits(o[f]).slice(0, 17);
   o.ean = digits(o.ean).length >= 12 ? digits(o.ean).slice(0, 14) : "";
+  o.sscc = digits(o.sscc); o.gtin = digits(o.gtin); o.cartonCount = digits(o.cartonCount);
   o.ram = o.ram.replace(/\s+/g, "").toUpperCase().replace(/G$/, "GB"); o.storage = o.storage.replace(/\s+/g, "").toUpperCase().replace(/G$/, "GB");
   o.serial = o.serial.replace(/\s+/g, "").toUpperCase();
   o.brand = canonBrand(o.brand); o.model = modelOnly(o.brand, o.model);

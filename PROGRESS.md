@@ -1003,6 +1003,17 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested with the Apple master-carton photo: 10 serials, count 10 ✓, rescan →
   10 duplicates, device-box project unchanged.
 
+### 19 October 2026 — carton scans: tolerant reader + carton table
+- "Not able to save" on carton scans: the reader only accepted `items`; real
+  answers may use serials / serial_numbers / imeis, objects or plain strings,
+  count as a string. Now all accepted.
+- Carton fields stored per row: sscc, gtin, cartonCount (FIELDS); Excel gets
+  Carton SSCC / GTIN / Carton count columns.
+- 🗃 Bulk-carton projects show their own table: Scanned, By, Brand, Product,
+  Model, Serial, IMEI, Carton SSCC, GTIN, Count (+ the in-table date/person
+  filters, paging, Columns picker). Device-box projects keep their table.
+- Tested: plain-list answer → 10 saved, carton table rows, device table unchanged.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

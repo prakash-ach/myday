@@ -1042,6 +1042,7 @@ const server = http.createServer(async (req, res) => {
             { header: "Serial", key: "serial", width: 18 }, { header: "Brand", key: "brand", width: 10 }, { header: "Model", key: "model", width: 22 }, { header: "Colour", key: "colour", width: 16 },
             { header: "RAM", key: "ram", width: 8 }, { header: "Storage", key: "storage", width: 9 }, { header: "Product model", key: "productModel", width: 14 }, { header: "EID", key: "eid", width: 34 },
             { header: "Scanned at", get: (r) => r.at.replace("T", " ").slice(0, 16), width: 17 }, { header: "Scanned by", get: (r) => r.byName || r.by, width: 16 },
+            { header: "Carton SSCC", key: "sscc", width: 22 }, { header: "GTIN", key: "gtin", width: 16 }, { header: "Carton count", key: "cartonCount", width: 10 },
             { header: "Edits", get: (r) => (r.edits || []).map((e) => `${e.field}: ${e.from || "—"} → ${e.to || "—"} (${e.by})`).join("; "), width: 40 }, { header: "Note", key: "note", width: 30 }],
           rows }]);
         res.writeHead(200, { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="${pname.replace(/[^\w .-]+/g, "").trim().slice(0, 60) || "Scan"} - scanned boxes - ${new Date().toISOString().slice(0, 10)}.xlsx"`, "cache-control": "no-store" });
@@ -1517,7 +1518,7 @@ async function runScan(job) {
     const c = await ai.scanCarton(DATA_DIR, "scan-" + me.id, job.img, job.mime);
     if (!c.items.length) { scanbox.dropPhoto(DATA_DIR, photoId); job.result = { retake: c.note || "Couldn't read the serials — take the carton label again" }; job.status = "done"; return; }
     const tag = [c.sscc && "carton SSCC " + c.sscc, c.gtin && "GTIN " + c.gtin, c.count != null && "count " + c.count].filter(Boolean).join(" · ");
-    const rows = c.items.map((x) => ({ brand: c.brand, model: c.model, productModel: c.product, serial: x.serial, imei1: x.imei, note: tag }));
+    const rows = c.items.map((x) => ({ brand: c.brand, model: c.model, productModel: c.product, serial: x.serial, imei1: x.imei, sscc: c.sscc, gtin: c.gtin, cartonCount: c.count != null ? String(c.count) : "", note: c.note || "" }));
     const out = scanbox.save(DATA_DIR, { photoId, rows, projectId: job.projectId }, who);
     if (!out.saved.length) scanbox.dropPhoto(DATA_DIR, photoId);
     const mismatch = c.count != null && c.count !== c.items.length ? ` · label says ${c.count}, read ${c.items.length} — check the label` : "";
