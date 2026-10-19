@@ -11,7 +11,8 @@
   const headers = (t) => [...t.querySelectorAll("thead th")].map((th) => th.textContent.replace(/[▲▼]/g, "").trim());
   const sig = (t) => "myday_cols:" + location.pathname + ":" + headers(t).join("|").slice(0, 300);
   const eligible = (t) => t.tHead && t.querySelectorAll("thead th").length >= 3 && !t.closest(".rp-kv,[data-no-tools]") && !t.classList.contains("rp-kv");
-  const ownPager = (t) => { const w = t.closest(".rp-tablewrap"); return !!(w && w.nextElementSibling && w.nextElementSibling.classList.contains("rp-pager")); };
+  const ownPager = (t) => { if (t.hasAttribute("data-own-pager")) return true; const w = t.closest(".rp-tablewrap"); return !!(w && w.nextElementSibling && w.nextElementSibling.classList.contains("rp-pager")); };
+  const stamp = (t) => t.querySelectorAll("tbody tr").length + "|" + (t.tBodies[0] && t.tBodies[0].firstElementChild ? t.tBodies[0].firstElementChild.textContent.length : 0) + "|" + rowsPer() + "|" + (t.__mydayBar && t.__mydayBar.isConnected ? 1 : 0);
 
   function apply(t) {
     const key = sig(t), hide = new Set(get(key, []));
@@ -34,14 +35,14 @@
     if (!b || !b.isConnected) {
       b = document.createElement("div"); b.className = "myday-tbar"; host.parentNode.insertBefore(b, host); t.__mydayBar = b;
       b.addEventListener("change", (e) => {
-        if (e.target.dataset.rows) { put("myday_rows", +e.target.value); pages.clear(); window.dispatchEvent(new CustomEvent("myday-rows", { detail: +e.target.value })); refreshAll(); }
-        if (e.target.dataset.col != null) { const s = new Set(get(st.key, [])); e.target.checked ? s.delete(e.target.dataset.col) : s.add(e.target.dataset.col); put(st.key, [...s]); refreshAll(); }
+        if (e.target.dataset.rows) { put("myday_rows", +e.target.value); pages.clear(); window.dispatchEvent(new CustomEvent("myday-rows", { detail: +e.target.value })); refreshAll(true); }
+        if (e.target.dataset.col != null) { const s = new Set(get(st.key, [])); e.target.checked ? s.delete(e.target.dataset.col) : s.add(e.target.dataset.col); put(st.key, [...s]); refreshAll(true); }
       });
       b.addEventListener("click", (e) => {
         const k = sig(t);
-        if (e.target.dataset.pg) { pages.set(k, Math.max(0, (pages.get(k) || 0) + +e.target.dataset.pg)); refreshAll(); }
+        if (e.target.dataset.pg) { pages.set(k, Math.max(0, (pages.get(k) || 0) + +e.target.dataset.pg)); refreshAll(true); }
         if (e.target.hasAttribute("data-cols")) { const m = b.querySelector(".myday-cols"); m.hidden = !m.hidden; }
-        if (e.target.hasAttribute("data-reset")) { put(k, []); refreshAll(); }
+        if (e.target.hasAttribute("data-reset")) { put(k, []); refreshAll(true); }
       });
     }
     const open = b.querySelector(".myday-cols") && !b.querySelector(".myday-cols").hidden;
@@ -50,10 +51,15 @@
       <button data-cols="1">Columns ▾${st.hide.size ? ` (${st.H.length - st.hide.size} of ${st.H.length})` : ""}</button>
       <div class="myday-cols" ${open ? "" : "hidden"}>${st.H.map((h, i) => h ? `<label><input type="checkbox" data-col="${h.replace(/"/g, "&quot;")}" ${st.hide.has(h) ? "" : "checked"}> ${h.replace(/</g, "&lt;")}</label>` : "").join("")}<button data-reset="1">Show all columns</button></div>`;
   }
-  let busy = false;
-  function refreshAll() {
+  let busy = false, force = false;
+  function refreshAll(f) {
+    if (f === true) force = true;
     if (busy) return; busy = true;
-    try { document.querySelectorAll("table").forEach((t) => { if (eligible(t)) bar(t, apply(t)); }); }
+    try { document.querySelectorAll("table").forEach((t) => {
+      if (!eligible(t)) return;
+      const s = stamp(t); if (!force && t.__mydayStamp === s) return;      // unchanged: nothing to do
+      bar(t, apply(t)); t.__mydayStamp = stamp(t);
+    }); force = false; }
     finally { setTimeout(() => (busy = false), 0); }
   }
   let tmr = null;

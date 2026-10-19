@@ -156,6 +156,7 @@ function updateProject(dir, me, id, change) {
   if (change.name != null) { const n = clean(change.name, 80); if (!n) return { error: "Give the project a name" }; p.name = n; }
   if (change.archived != null) p.archived = change.archived ? { at: new Date().toISOString(), by: me.username } : undefined;
   if (change.defaults) p.defaults = { ram: clean(change.defaults.ram, 10).replace(/\s+/g, "").toUpperCase(), storage: clean(change.defaults.storage, 10).replace(/\s+/g, "").toUpperCase() };
+  if (change.scanType) p.scanType = change.scanType === "carton" ? "carton" : "box";
   if (change.locked != null) p.locked = change.locked ? { at: new Date().toISOString(), by: me.username } : undefined;   // scanning stopped
   saveProjects(dir, list); return { project: p };
 }
@@ -197,13 +198,15 @@ function purge(dir, me, ids) {
   return gone.length;
 }
 function edit(dir, me, owner, id, field, value) {
-  if (field === "imei2Status") {               // IMEI 2 can be set aside: "ignored" (or back to its real check)
+  if (field === "imei2Status" || field === "imei1Status") {
+    // A person can confirm a flagged IMEI is right ("confirmed"), set IMEI 2 aside ("ignored"), or undo (re-check).
+    const f = field === "imei1Status" ? "imei1" : "imei2";
     const d = read(dir), r = d.rows.find((x) => x.id === id);
     if (!r || r.hidden || !canSee(r, me, owner)) return { error: "not found" };
-    const from = r.checks.imei2, to = value === "ignored" ? "ignored" : checkImei(r.imei2, "typed");
+    const from = r.checks[f], to = value === "confirmed" ? "confirmed" : value === "ignored" && f === "imei2" ? "ignored" : checkImei(r[f], "typed");
     if (from === to) return { row: r };
-    r.checks.imei2 = to;
-    r.edits = [...(r.edits || []), { at: new Date().toISOString(), by: me.username, field: "IMEI 2 status", from, to }];
+    r.checks[f] = to; if (to === "confirmed") r.checks[f + "By"] = me.displayName || me.username; else delete r.checks[f + "By"];
+    r.edits = [...(r.edits || []), { at: new Date().toISOString(), by: me.username, field: (f === "imei1" ? "IMEI 1" : "IMEI 2") + " status", from, to }];
     write(dir, d); return { row: r };
   }
   if (!FIELDS.includes(field)) return { error: "can't edit that" };
@@ -291,4 +294,17 @@ function saveFromCloseup(dir, user, photoId, box, got, projectId) {
   return out.saved.length ? { saved: out.saved[0].id } : { duplicate: true };
 }
 
-module.exports = { bulk, project, projects, createProject, updateProject, projectList, saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };
+/* Owner: delete a locked project's photos to free disk space; every row is kept (photoId cleared, logged). */
+function dropProjectPhotos(dir, me, projectId) {
+  const d = read(dir); let photos = 0, bytes = 0; const seen = new Set();
+  for (const r of d.rows) {
+    if ((r.projectId || "none") !== projectId || !r.photoId) continue;
+    if (!seen.has(r.photoId)) { seen.add(r.photoId); try { bytes += fs.statSync(photo(dir, r.photoId)).size; } catch (e) {} dropPhoto(dir, r.photoId); photos++; }
+    r.edits = [...(r.edits || []), { at: new Date().toISOString(), by: me.username, field: "photo", from: "kept", to: "deleted to free space" }];
+    r.photoId = null;
+  }
+  write(dir, d);
+  return { photos, mb: Math.round(bytes / 1048576) };
+}
+
+module.exports = { dropProjectPhotos, bulk, project, projects, createProject, updateProject, projectList, saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };

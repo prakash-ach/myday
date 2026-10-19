@@ -1000,6 +1000,11 @@ const server = http.createServer(async (req, res) => {
       if (p === "/api/scanbox/list" && req.method === "GET") {
         const pid = url.searchParams.has("project") ? String(url.searchParams.get("project")) : undefined;
         const rows = scanbox.list(DATA_DIR, me, owner, url.searchParams.get("removed") === "1", pid);
+        const payload = { owner, me: me.username, rows, people: [...new Set(rows.map((r) => r.byName || r.by))], removed: owner ? scanbox.removedCount(DATA_DIR, pid) : undefined };
+        if (/\bgzip\b/.test(req.headers["accept-encoding"] || "")) {       // big projects: send it compressed
+          res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "cache-control": "no-store" });
+          return res.end(require("node:zlib").gzipSync(JSON.stringify(payload)));
+        }
         return json(res, 200, { owner, me: me.username, rows, people: [...new Set(rows.map((r) => r.byName || r.by))], removed: owner ? scanbox.removedCount(DATA_DIR, pid) : undefined });
       }
       if ((p === "/api/scanbox/restore" || p === "/api/scanbox/purge") && req.method === "POST") {
@@ -1008,6 +1013,12 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, p.endsWith("restore") ? { restored: scanbox.restore(DATA_DIR, me, ids) } : { deleted: scanbox.purge(DATA_DIR, me, ids) });
       }
       if (p === "/api/scanbox/edit" && req.method === "POST") { const b = (await rb()) || {}; const r = scanbox.edit(DATA_DIR, me, owner, String(b.id), String(b.field), b.value); return json(res, r.error ? 400 : 200, r); }
+      if (p === "/api/scanbox/drop-photos" && req.method === "POST") {
+        if (!owner) return json(res, 403, { error: "Only the owner can delete photos." });
+        const b = (await rb()) || {}, pr = scanbox.project(DATA_DIR, String(b.projectId || ""));
+        if (!pr || !pr.locked) return json(res, 400, { error: "Lock the project for scanning first." });
+        return json(res, 200, scanbox.dropProjectPhotos(DATA_DIR, me, pr.id));
+      }
       if (p === "/api/scanbox/bulk" && req.method === "POST") { const b = (await rb()) || {}; const r = scanbox.bulk(DATA_DIR, me, owner, (b.ids || []).map(String).slice(0, 5000), String(b.field), b.value); return json(res, r.error ? 400 : 200, r); }
       if (p === "/api/scanbox/hide" && req.method === "POST") { const b = (await rb()) || {}; return json(res, 200, { hidden: scanbox.hide(DATA_DIR, me, owner, (b.ids || []).map(String)) }); }
       const ph = p.match(/^\/api\/scanbox\/photo\/([a-f0-9]{18})$/);
@@ -1021,8 +1032,8 @@ const server = http.createServer(async (req, res) => {
         const rows = scanbox.list(DATA_DIR, me, owner).filter((r) => !b.ids || want.has(r.id));
         const proj = b.projectId === "none" ? { name: "Earlier scans" } : scanbox.project(DATA_DIR, String(b.projectId || ""));
         const pname = proj ? proj.name : "All projects";
-        const mark = (c) => (c === "barcode" ? "✓ barcode" : c === "valid" ? "✓ check digit" : c === "bad" ? "⚠ fails check digit" : c === "typed" ? "typed" : c === "read" ? "read" : c === "ignored" ? "⊘ ignored" : "—");
-        const fill = (c) => (c === "bad" ? "red" : c === "barcode" || c === "valid" ? "green" : null);
+        const mark = (c) => (c === "barcode" ? "✓ barcode" : c === "valid" ? "✓ check digit" : c === "bad" ? "⚠ fails check digit" : c === "typed" ? "typed" : c === "read" ? "read" : c === "ignored" ? "⊘ ignored" : c === "confirmed" ? "✓ checked by person" : "—");
+        const fill = (c) => (c === "bad" ? "red" : c === "barcode" || c === "valid" || c === "confirmed" ? "green" : null);
         const filt = Object.entries(b.filters || {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · ") || "none";
         const buf = require("./lib/xlsxw").build([{ name: "Scanned boxes", freezeCols: 1,
           preface: [{ text: `${pname} — scanned boxes`, title: true }, { text: `Project: ${pname} · exported ${new Date().toISOString()} by ${who.name} · ${rows.length} rows · filters: ${filt}` }],
@@ -1501,6 +1512,18 @@ function pumpScans() {
 async function runScan(job) {
   const me = job.me, who = { username: me.username, name: me.displayName || me.username };
   const photoId = scanbox.savePhoto(DATA_DIR, job.img, me.username);
+  const proj = job.projectId ? scanbox.project(DATA_DIR, job.projectId) : null;
+  if (proj && proj.scanType === "carton") {                       // bulk carton: one row per serial / IMEI on the label
+    const c = await ai.scanCarton(DATA_DIR, "scan-" + me.id, job.img, job.mime);
+    if (!c.items.length) { scanbox.dropPhoto(DATA_DIR, photoId); job.result = { retake: c.note || "Couldn't read the serials — take the carton label again" }; job.status = "done"; return; }
+    const tag = [c.sscc && "carton SSCC " + c.sscc, c.gtin && "GTIN " + c.gtin, c.count != null && "count " + c.count].filter(Boolean).join(" · ");
+    const rows = c.items.map((x) => ({ brand: c.brand, model: c.model, productModel: c.product, serial: x.serial, imei1: x.imei, note: tag }));
+    const out = scanbox.save(DATA_DIR, { photoId, rows, projectId: job.projectId }, who);
+    if (!out.saved.length) scanbox.dropPhoto(DATA_DIR, photoId);
+    const mismatch = c.count != null && c.count !== c.items.length ? ` · label says ${c.count}, read ${c.items.length} — check the label` : "";
+    job.result = { photoId, carton: true, saved: out.saved.length, duplicates: out.skipped.filter((x) => /already scanned/.test(x.reason)).length, boxes: [], note: `${c.items.length} serial${c.items.length === 1 ? "" : "s"} read${c.count != null && !mismatch ? ` · count ${c.count} ✓` : ""}${mismatch}` };
+    job.status = "done"; return;
+  }
   const r = await ai.scanBoxes(DATA_DIR, "scan-" + me.id, job.img, job.mime);
   const usable = r.boxes.filter((x) => x.model || x.imei1 || x.serial);
   if (!usable.length) { scanbox.dropPhoto(DATA_DIR, photoId); job.result = { retake: r.retake || "Couldn't read any box — take it again" }; job.status = "done"; return; }

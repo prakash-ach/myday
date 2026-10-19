@@ -968,6 +968,41 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested with 6 rows: IMEI-1-only needs checking (1), IMEI 2 filter (3), ignore +
   bulk ignore stored + logged, date and person filters, Clear.
 
+### 19 October 2026 — Scan Boxes: a person can confirm a flagged IMEI is right
+- "✓ It's right" next to a flagged IMEI 1 or IMEI 2 → checks.imeiN =
+  "confirmed" + imeiNBy (name); leaves Needs checking, counts as ✓ IMEI
+  verified, shown "checked by <name> · undo", Excel "✓ checked by person"
+  (green). Bulk "✓ Mark IMEI 1 right on N" (asks to confirm). Logged as
+  "IMEI 1/2 status" edits; undo re-runs the normal check. (`edit` field
+  "imei1Status" / "imei2Status".)
+- Tested: Needs checking 2 → 1, stored with who, logged, shown as checked.
+
+### 19 October 2026 — speed fixes (server was healthy: 2 GB, load 0.07)
+- Prakash's droplet: 1.97 GB RAM with 1.46 GB available, load 0.07 → the
+  slowness was in the browser. Disk: Scan Boxes photos 1.1 GB.
+- tables.js only re-processes a table when it changed (row count / first row /
+  rows setting stamp); clicks force a refresh. Tables marked
+  `data-own-pager` page themselves.
+- Scan Boxes draws only the current page (Rows setting, default 20) with its
+  own Prev/Next; list endpoint gzip-compressed; refresh after photos debounced
+  to 3 s; queue polling pauses while the tab is hidden.
+- Owner: in a locked project, "🗑 Delete this project's photos (keep the
+  data)" → `/api/scanbox/drop-photos` deletes the image files, clears photoId,
+  logs it per row; reports photos and MB freed.
+- Also advised: apt upgrade + reboot (security update pending).
+
+### 19 October 2026 — Scan Boxes: scan type per project (device box / bulk carton)
+- Owner sets each project's Scan type on its card: 📦 Device box (default —
+  the existing flow, unchanged; existing projects stay on it) or 🗃 Bulk carton
+  (project.scanType = "carton"). Staff see the type; the camera prompt adapts.
+- Carton photos go to `ai.scanCarton`: brand, model, product/part number,
+  count, GTIN, SSCC and every serial/IMEI listed → one row per serial (product
+  in Product model, "carton SSCC · GTIN · count" in the note); duplicates per
+  project as usual; label count vs serials read compared — mismatch is shown
+  and the photo goes to Retake with the rows kept. No close-up re-reads.
+- Tested with the Apple master-carton photo: 10 serials, count 10 ✓, rescan →
+  10 duplicates, device-box project unchanged.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
