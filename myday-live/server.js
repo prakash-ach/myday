@@ -1021,7 +1021,7 @@ const server = http.createServer(async (req, res) => {
         const rows = scanbox.list(DATA_DIR, me, owner).filter((r) => !b.ids || want.has(r.id));
         const proj = b.projectId === "none" ? { name: "Earlier scans" } : scanbox.project(DATA_DIR, String(b.projectId || ""));
         const pname = proj ? proj.name : "All projects";
-        const mark = (c) => (c === "barcode" ? "✓ barcode" : c === "valid" ? "✓ check digit" : c === "bad" ? "⚠ fails check digit" : c === "typed" ? "typed" : c === "read" ? "read" : "—");
+        const mark = (c) => (c === "barcode" ? "✓ barcode" : c === "valid" ? "✓ check digit" : c === "bad" ? "⚠ fails check digit" : c === "typed" ? "typed" : c === "read" ? "read" : c === "ignored" ? "⊘ ignored" : "—");
         const fill = (c) => (c === "bad" ? "red" : c === "barcode" || c === "valid" ? "green" : null);
         const filt = Object.entries(b.filters || {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(" · ") || "none";
         const buf = require("./lib/xlsxw").build([{ name: "Scanned boxes", freezeCols: 1,

@@ -197,6 +197,15 @@ function purge(dir, me, ids) {
   return gone.length;
 }
 function edit(dir, me, owner, id, field, value) {
+  if (field === "imei2Status") {               // IMEI 2 can be set aside: "ignored" (or back to its real check)
+    const d = read(dir), r = d.rows.find((x) => x.id === id);
+    if (!r || r.hidden || !canSee(r, me, owner)) return { error: "not found" };
+    const from = r.checks.imei2, to = value === "ignored" ? "ignored" : checkImei(r.imei2, "typed");
+    if (from === to) return { row: r };
+    r.checks.imei2 = to;
+    r.edits = [...(r.edits || []), { at: new Date().toISOString(), by: me.username, field: "IMEI 2 status", from, to }];
+    write(dir, d); return { row: r };
+  }
   if (!FIELDS.includes(field)) return { error: "can't edit that" };
   const d = read(dir), r = d.rows.find((x) => x.id === id);
   if (!r || r.hidden || !canSee(r, me, owner)) return { error: "not found" };

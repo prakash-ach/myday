@@ -956,6 +956,18 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested on Scan Boxes (45 rows): 20 by default, Next, Rows 50, hide Colour,
   both remembered after refresh.
 
+### 19 October 2026 — Scan Boxes: filters on the table; IMEI 2 can be ignored
+- A filter row under the table headings: Scanned → From/To date; By → person
+  (owner); Clear. Replaces the separate date/person boxes above the table.
+- "⚠ Needs checking" now means IMEI 1 only (bad, or no IMEI 1 and no serial);
+  new "IMEI 2 needs checking" filter.
+- IMEI 2 can be set aside: ⊘ Ignore per row (undo) and "Ignore IMEI 2" bulk
+  action → checks.imei2 = "ignored" (shown ⊘, "⊘ ignored" in Excel), logged as
+  "IMEI 2 status" edits; undo re-runs the normal check. (`edit` field
+  "imei2Status".)
+- Tested with 6 rows: IMEI-1-only needs checking (1), IMEI 2 filter (3), ignore +
+  bulk ignore stored + logged, date and person filters, Clear.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
