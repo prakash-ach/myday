@@ -1036,6 +1036,12 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   darker labels (mean > 25).
 - Tested combine (4 rows, sources, originals unchanged) and name-legacy.
 
+### 26 October 2026 — Scan Boxes: PDF with photos
+- "⬇ PDF with photos" beside ⬇ Excel: opens a print view of the filtered rows
+  (device or carton layout) with each row's photo beside its details, loaded
+  through the signed-in session (nothing public); the print dialog opens once
+  the photos have loaded → "Save as PDF". Tested: 10 rows, 10 photos.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
