@@ -21,13 +21,15 @@
   function projectsHtml() {
     const P = S.projects; if (!P) return `<p class="sb-dim">Loading projects…</p>`;
     const live = P.filter((p) => !p.archived), arch = P.filter((p) => p.archived);
-    const card = (p) => `<div class="sb-proj ${p.archived ? "arch" : ""} ${p.locked ? "locked" : ""}"><button class="sb-proj-open" data-proj="${esc(p.id)}"><b>${p.locked ? "🔒 " : ""}${esc(p.name)}</b>
+    const card = (p) => `<div class="sb-proj${S.combine && S.combine.has(p.id) ? " picked" : ""} ${p.archived ? "arch" : ""} ${p.locked ? "locked" : ""}">${S.isOwner ? `<label class="sb-pick"><input type="checkbox" data-combine="${esc(p.id)}" ${S.combine && S.combine.has(p.id) ? "checked" : ""}> combine</label>` : ""}<button class="sb-proj-open" data-proj="${esc(p.id)}"><b>${p.locked ? "🔒 " : ""}${esc(p.name)}</b>
         <span>${p.rows} box${p.rows === 1 ? "" : "es"}${S.isOwner ? "" : " scanned by you"}${p.createdAt ? ` · started ${esc(p.createdAt.slice(0, 10))}` : ""}${p.locked ? " · locked for scanning" : ""}${p.archived ? " · archived" : ""}</span></button>
       ${!p.legacy ? `<div class="sb-proj-type">${S.isOwner ? `Scan type <select data-scantype="${esc(p.id)}"><option value="box" ${p.scanType !== "carton" ? "selected" : ""}>📦 Device box (one label per box)</option><option value="carton" ${p.scanType === "carton" ? "selected" : ""}>🗃 Bulk carton (many serials/IMEIs)</option></select>` : p.scanType === "carton" ? "🗃 Bulk carton" : "📦 Device box"}</div>` : ""}
+      ${S.isOwner && p.legacy ? `<div class="sb-proj-act"><button class="sb-link" data-namelegacy>Name these scans → new project</button></div>` : ""}
       ${S.isOwner && !p.legacy ? `<div class="sb-proj-act"><button class="sb-lock ${p.locked ? "on" : ""}" data-lock="${esc(p.id)}">${p.locked ? "🔓 Unlock scanning" : "🔒 Lock scanning"}</button><button class="sb-link" data-rename="${esc(p.id)}">Rename</button><button class="sb-link" data-archive="${esc(p.id)}">${p.archived ? "Unarchive" : "Archive"}</button></div>` : ""}</div>`;
     return `<div class="sb-top"><div><h1>Scan Boxes</h1><p class="sb-dim">Choose a project to scan into. Each project has its own table and its own Excel export.</p></div></div>
       ${S.isOwner ? `<div class="sb-panel"><div class="sb-row"><input class="sb-newproj" placeholder="New project name, e.g. October POCO lot" maxlength="80"><button class="sb-pri" data-newproj>+ Create project</button></div>${S.projErr ? `<p class="sb-warn">${esc(S.projErr)}</p>` : ""}</div>` : ""}
       ${!S.isOwner && S.projErr ? `<p class="sb-warn sb-panel">${esc(S.projErr)}</p>` : ""}
+      ${S.isOwner && S.combine && S.combine.size >= 2 ? `<div class="sb-panel sb-row"><b>${S.combine.size} projects selected</b><input class="sb-newproj" data-combname placeholder="Name for the combined project"><button class="sb-pri" data-docombine>Combine into new project</button><span class="sb-dim">Copies every row, with a Source column. The originals stay as they are.</span></div>` : ""}
       ${live.length ? `<div class="sb-projs">${live.map(card).join("")}</div>` : `<div class="sb-panel"><p class="sb-dim">${S.isOwner ? "No projects yet — create one above." : "No projects yet. Ask the owner to create one, then it appears here."}</p></div>`}
       ${arch.length ? `<details class="sb-arch"><summary>Archived (${arch.length})</summary><div class="sb-projs">${arch.map(card).join("")}</div></details>` : ""}`;
   }
@@ -275,7 +277,7 @@
     const moving = diffOf(f.grid, AUTO.prev && AUTO.prev.grid); AUTO.prev = f; AUTO.lastInfo = { ...f, moving };
     // Frame edges must look like the bare surface (its own texture allowed) — a cut-off label or a hand is much busier.
     const ringMax = Math.max(0.06, (AUTO.bg || 0) + 0.04);
-    const isLabel = f.bars >= 12 && f.ring < ringMax && f.mean > 35 && f.mean < 250;
+    const isLabel = (f.bars >= 12 || f.edges > 0.13) && f.ring < ringMax && f.mean > 25 && f.mean < 250;   // barcode, or lots of print (glare can hide the bars)
     AUTO.lastInfo.isLabel = isLabel;
     // One shot per box: after a shot, wait until that label has LEFT the frame before arming again.
     if (!AUTO.armed) { if (!isLabel && f.edges < (AUTO.need || 0.08)) AUTO.armed = true; else return setAuto(`✓ ${CAM.taken} — next box`, 0); }
@@ -629,7 +631,7 @@
       ${list.slice((S.sbPage || 0) * (S.sbPer || 20), ((S.sbPage || 0) + 1) * (S.sbPer || 20)).map((r) => S.edit === r.id ? `<tr class="editing"><td></td><td colspan="13"><div class="sb-fields">${F_EDIT.map(([f, l]) => `<label>${l}<input data-ef="${f}" value="${esc(r[f])}"></label>`).join("")}</div>
           <div class="sb-row"><button class="sb-pri" data-esave="${r.id}">Save changes</button><button class="sb-sec" data-ecancel>Cancel</button>${(r.edits || []).length ? `<span class="sb-dim">${r.edits.length} earlier edit(s): ${esc(r.edits.slice(-3).map((e) => `${e.field} ${e.from || "—"}→${e.to || "—"} by ${e.by}`).join("; "))}</span>` : ""}</div></td></tr>`
         : `<tr class="${r.hidden ? "removed" : ""}"><td><input type="checkbox" data-pick="${r.id}" ${S.pick.has(r.id) ? "checked" : ""}></td><td>${esc(r.at.slice(0, 10))}<small>${esc(r.at.slice(11, 16))}</small>${r.hidden ? `<small class="sb-rm">Removed by ${esc(r.hidden.name || r.hidden.by)} ${esc(String(r.hidden.at).slice(0, 10))}</small>` : ""}</td><td>${esc(r.byName || r.by)}</td>
-          <td><b>${esc(r.brand)}</b></td><td>${esc(r.model)}</td><td>${esc(r.colour)}</td><td>${esc(r.ram) || '<span class="sb-miss">—</span>'}${r.filled && r.filled.ram ? `<small>${esc(r.filled.ram)}</small>` : ""}</td><td>${esc(r.storage) || '<span class="sb-miss">missing</span>'}${r.filled && r.filled.storage ? `<small>${esc(r.filled.storage)}</small>` : ""}</td>
+          <td><b>${esc(r.brand)}</b>${r.source ? `<small class="sb-src">from ${esc(r.source)}</small>` : ""}</td><td>${esc(r.model)}</td><td>${esc(r.colour)}</td><td>${esc(r.ram) || '<span class="sb-miss">—</span>'}${r.filled && r.filled.ram ? `<small>${esc(r.filled.ram)}</small>` : ""}</td><td>${esc(r.storage) || '<span class="sb-miss">missing</span>'}${r.filled && r.filled.storage ? `<small>${esc(r.filled.storage)}</small>` : ""}</td>
           <td class="mono">${mark(r.checks.imei1)} ${esc(r.imei1 || "—")}${r.checks.imei1 === "bad" ? ` <button class="sb-link" data-ok1="${r.id}" title="I checked the box — this IMEI is right">✓ It's right</button>` : r.checks.imei1 === "confirmed" ? `<small>checked by ${esc(r.checks.imei1By || "")} · <button class="sb-link" data-unok1="${r.id}">undo</button></small>` : ""}</td><td class="mono">${mark(r.checks.imei2)} ${esc(r.imei2 || "—")}${r.checks.imei2 === "bad" ? ` <button class="sb-link" data-ok2="${r.id}" title="I checked the box — this IMEI is right">✓ It's right</button> <button class="sb-link" data-ign2="${r.id}" title="Set IMEI 2 aside — IMEI 1 is what counts">⊘ Ignore</button>` : r.checks.imei2 === "ignored" || r.checks.imei2 === "confirmed" ? ` <button class="sb-link" data-unign2="${r.id}">undo</button>` : ""}</td><td class="mono">${mark(r.checks.serial)} ${esc(r.serial || "—")}</td>
           <td class="mono">${esc(r.productModel)}</td><td>${r.photoId ? `<button class="sb-link" data-photo="${esc(r.photoId)}">Photo</button>` : ""} <button class="sb-link" data-edit="${r.id}">Edit</button>${(r.edits || []).length ? `<small>edited</small>` : ""}</td></tr>`).join("")
         || `<tr><td colspan="14" class="sb-empty">${D.rows.length ? "Nothing matches these filters." : "No boxes scanned yet. Tap 📷 Scan boxes to start."}</td></tr>`}</tbody></table></div>
@@ -679,6 +681,15 @@
       return post("/api/scanbox/projects", { name }).then(async (x) => { if (!x.ok) { S.projErr = x.j.error; return draw(); } await loadProjects(); draw(); });
     }
     if (t.dataset.rename) { const p = S.projects.find((x) => x.id === t.dataset.rename); const name = prompt("Rename project", p.name); if (!name) return; return post("/api/scanbox/projects", { id: p.id, name }).then(() => loadProjects()).then(draw); }
+    if (t.hasAttribute("data-docombine")) {
+      const name = (S.host.querySelector("[data-combname]") || {}).value || "";
+      if (!name.trim()) return alert("Give the combined project a name.");
+      return post("/api/scanbox/combine", { ids: [...S.combine], name }).then(async (x) => { if (!x.ok) return alert(x.j.error); S.combine = new Set(); await loadProjects(); draw(); const c = ctx(); c && c.setToast && c.setToast(`Created "${x.j.project.name}" with ${x.j.rows} rows`); });
+    }
+    if (t.hasAttribute("data-namelegacy")) {
+      const name = prompt("Name for these earlier scans (they become a project):"); if (!name) return;
+      return post("/api/scanbox/name-legacy", { name }).then(async (x) => { if (!x.ok) return alert(x.j.error); await loadProjects(); draw(); });
+    }
     if (t.dataset.sbpg) { S.sbPage = Math.max(0, (S.sbPage || 0) + +t.dataset.sbpg); return draw(); }
     if (t.hasAttribute("data-dropphotos")) {
       if (!confirm(`Delete every photo in "${S.project.name}"? The scanned rows (models, IMEIs, serials…) are all kept — only the pictures go, to free disk space. This can't be undone.`)) return;
@@ -755,6 +766,7 @@
       if (files.length) (S.rapid ? enqueue(files) : scan(files)); return;
     }
     if (t.hasAttribute("data-rapid")) { S.rapid = t.checked; return draw(); }
+    if (t.dataset.combine) { S.combine = S.combine || new Set(); t.checked ? S.combine.add(t.dataset.combine) : S.combine.delete(t.dataset.combine); return draw(); }
     if (t.dataset.scantype) return post("/api/scanbox/projects", { id: t.dataset.scantype, scanType: t.value }).then(() => loadProjects()).then(draw);
     if (t.dataset.retake) {           // the retake replaces that item
       const files = [...t.files]; t.value = ""; if (!files.length) return;
@@ -841,6 +853,7 @@
   .sb-frow td{padding:4px 6px !important;background:var(--chip)}.sb-frow input,.sb-frow select{display:block;width:100%;min-width:118px;margin:2px 0;border:1px solid var(--line);background:var(--card);border-radius:7px;padding:3px 6px;font-size:12px;color:var(--ink)}
   .sb-pager{display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--muted);margin:4px 0}
   .sb-proj-type{padding:0 16px 8px;font-size:12px;color:var(--muted)}.sb-proj-type select{border:1px solid var(--line);background:var(--chip);border-radius:8px;padding:4px 6px;color:var(--ink);font-size:12px}
+  .sb-pick{display:block;padding:8px 16px 0;font-size:12px;color:var(--muted)}.sb-proj.picked{border-color:var(--a)}.sb-src{display:block;color:var(--a) !important;font-size:11px}
   .sb-people{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px}.sb-people span{border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12.5px;color:var(--muted)}.sb-people b{color:var(--ink)}
   .sb-bulk{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 12px;margin-bottom:8px;border:1px solid var(--a);border-radius:12px;background:var(--card);font-size:13px}
   .sb-bulk select,.sb-bulk input{border:1px solid var(--line);background:var(--chip);border-radius:8px;padding:6px 8px;color:var(--ink)}

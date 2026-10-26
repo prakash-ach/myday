@@ -92,7 +92,7 @@ function fillBlanks(r, eans, proj) {
 }
 const view = (r) => ({ ...r, brand: canonBrand(r.brand), model: modelOnly(r.brand, r.model) });     // display only
 
-const FIELDS = ["brand", "model", "colour", "ram", "storage", "imei1", "imei2", "serial", "productModel", "ean", "eid", "note", "sscc", "gtin", "cartonCount"];
+const FIELDS = ["brand", "model", "colour", "ram", "storage", "imei1", "imei2", "serial", "productModel", "ean", "eid", "note", "sscc", "gtin", "cartonCount", "source"];
 function normalise(r) {
   const o = {};
   for (const f of FIELDS) o[f] = clean(r[f], f === "note" ? 300 : 60);
@@ -308,4 +308,29 @@ function dropProjectPhotos(dir, me, projectId) {
   return { photos, mb: Math.round(bytes / 1048576) };
 }
 
-module.exports = { dropProjectPhotos, bulk, project, projects, createProject, updateProject, projectList, saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };
+/* Owner: combine projects into a NEW project — a copy of every row with "source" = the project it came
+   from. The original projects and rows are left exactly as they are. */
+function combineProjects(dir, me, ids, name) {
+  const made = createProject(dir, me, name); if (made.error) return made;
+  const P = new Map(projects(dir).map((p) => [p.id, p.name])); P.set("none", "No project");
+  const d = read(dir), now = new Date().toISOString(); let n = 0;
+  const src = d.rows.filter((r) => !r.hidden && ids.includes(r.projectId || "none"));
+  for (const r of src) {
+    d.rows.push({ ...r, id: crypto.randomBytes(8).toString("hex"), projectId: made.project.id, source: P.get(r.projectId || "none") || "",
+      edits: [...(r.edits || []), { at: now, by: me.username, field: "copied", from: P.get(r.projectId || "none") || "", to: made.project.name }] });
+    n++;
+  }
+  write(dir, d);
+  const list = projects(dir), np = list.find((p) => p.id === made.project.id);
+  np.combinedFrom = ids.map((i) => P.get(i) || i); saveProjects(dir, list);
+  return { project: np, rows: n };
+}
+/* Owner: give "Earlier scans (no project)" a name — they become a project (each row logged). */
+function nameLegacy(dir, me, name) {
+  const made = createProject(dir, me, name); if (made.error) return made;
+  const d = read(dir), now = new Date().toISOString(); let n = 0;
+  for (const r of d.rows) if (!r.projectId) { r.projectId = made.project.id; r.edits = [...(r.edits || []), { at: now, by: me.username, field: "project", from: "no project", to: made.project.name }]; n++; }
+  write(dir, d); return { project: made.project, rows: n };
+}
+
+module.exports = { combineProjects, nameLegacy, dropProjectPhotos, bulk, project, projects, createProject, updateProject, projectList, saveFromCloseup, removedCount, restore, purge, canonBrand, modelOnly, applyReread, dropPhoto, luhn, digits, savePhoto, save, list, edit, hide, photoFor, duplicates, normalise, FIELDS, checkImei };

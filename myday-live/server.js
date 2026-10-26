@@ -644,13 +644,10 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const tok = await google.exchangeCode(code);
+      // Never reuse an old refresh token: after a password change Google has revoked it.
       if (!tok.refresh_token) {
-        const old = google.readTokens(DATA_DIR, pending.userId);
-        if (old && old.refresh_token) tok.refresh_token = old.refresh_token;
-      }
-      if (!tok.refresh_token) {
-        return page("No lasting permission was given",
-          "Google didn't return a refresh token, so this would stop working within the hour. Try connecting again.", false);
+        return page("Remove MYDAY's old access first",
+          "Google didn't send a new lasting permission because it still remembers MYDAY's old one (which may have been cancelled — e.g. after a password change). Open myaccount.google.com/connections, remove MYDAY's access, then connect Gmail again.", false);
       }
       google.writeTokens(DATA_DIR, pending.userId, {
         refresh_token: tok.refresh_token,
@@ -1013,6 +1010,12 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, p.endsWith("restore") ? { restored: scanbox.restore(DATA_DIR, me, ids) } : { deleted: scanbox.purge(DATA_DIR, me, ids) });
       }
       if (p === "/api/scanbox/edit" && req.method === "POST") { const b = (await rb()) || {}; const r = scanbox.edit(DATA_DIR, me, owner, String(b.id), String(b.field), b.value); return json(res, r.error ? 400 : 200, r); }
+      if ((p === "/api/scanbox/combine" || p === "/api/scanbox/name-legacy") && req.method === "POST") {
+        if (!owner) return json(res, 403, { error: "Only the owner can do that." });
+        const b = (await rb()) || {};
+        const r = p.endsWith("combine") ? scanbox.combineProjects(DATA_DIR, me, (b.ids || []).map(String).slice(0, 50), b.name) : scanbox.nameLegacy(DATA_DIR, me, b.name);
+        return json(res, r.error ? 400 : 200, r);
+      }
       if (p === "/api/scanbox/drop-photos" && req.method === "POST") {
         if (!owner) return json(res, 403, { error: "Only the owner can delete photos." });
         const b = (await rb()) || {}, pr = scanbox.project(DATA_DIR, String(b.projectId || ""));
@@ -1042,7 +1045,7 @@ const server = http.createServer(async (req, res) => {
             { header: "Serial", key: "serial", width: 18 }, { header: "Brand", key: "brand", width: 10 }, { header: "Model", key: "model", width: 22 }, { header: "Colour", key: "colour", width: 16 },
             { header: "RAM", key: "ram", width: 8 }, { header: "Storage", key: "storage", width: 9 }, { header: "Product model", key: "productModel", width: 14 }, { header: "EID", key: "eid", width: 34 },
             { header: "Scanned at", get: (r) => r.at.replace("T", " ").slice(0, 16), width: 17 }, { header: "Scanned by", get: (r) => r.byName || r.by, width: 16 },
-            { header: "Carton SSCC", key: "sscc", width: 22 }, { header: "GTIN", key: "gtin", width: 16 }, { header: "Carton count", key: "cartonCount", width: 10 },
+            { header: "Source", key: "source", width: 22 }, { header: "Carton SSCC", key: "sscc", width: 22 }, { header: "GTIN", key: "gtin", width: 16 }, { header: "Carton count", key: "cartonCount", width: 10 },
             { header: "Edits", get: (r) => (r.edits || []).map((e) => `${e.field}: ${e.from || "—"} → ${e.to || "—"} (${e.by})`).join("; "), width: 40 }, { header: "Note", key: "note", width: 30 }],
           rows }]);
         res.writeHead(200, { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="${pname.replace(/[^\w .-]+/g, "").trim().slice(0, 60) || "Scan"} - scanned boxes - ${new Date().toISOString().slice(0, 10)}.xlsx"`, "cache-control": "no-store" });

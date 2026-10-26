@@ -1014,6 +1014,28 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   filters, paging, Columns picker). Device-box projects keep their table.
 - Tested: plain-list answer → 10 saved, carton table rows, device table unchanged.
 
+### 19 October 2026 — Gmail reconnect after a password change
+- A password change revokes MYDAY's Gmail refresh token. On reconnect Google
+  may not send a new refresh token (it remembers the grant); the callback then
+  reused the old, revoked one → "Token has been expired or revoked" kept
+  repeating. The callback no longer reuses an old refresh token: it shows
+  "Remove MYDAY's old access first" (myaccount.google.com/connections), then
+  connecting again gets a fresh token.
+
+### 26 October 2026 — combine projects, name no-project scans, printed-IMEI fallback
+- Owner: tick "combine" on 2+ project cards → name → "Combine into new
+  project": a NEW project with a copy of every row (new ids, `source` = the
+  origin project name, "copied" edit logged; combinedFrom on the project).
+  Originals untouched. "Earlier scans (no project)" → "Name these scans → new
+  project" (rows get the project, logged). Source shown under Brand and as an
+  Excel column. Rename already existed (owner, project card).
+- POCO C75 black labels under glossy wrap weren't auto-captured / read: the AI
+  (stack read and close-up read) is told to use the printed "IMEI1:/IMEI2:/SN:"
+  text when barcodes are unreadable; auto-capture accepts a label with dense
+  print (edge density > 0.13) when barcode stripes are hidden by glare, and
+  darker labels (mean > 25).
+- Tested combine (4 rows, sources, originals unchanged) and name-legacy.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
