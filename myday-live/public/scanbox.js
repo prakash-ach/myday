@@ -609,7 +609,7 @@
       <input type="search" data-f="q" placeholder="Search model, IMEI, serial…" value="${esc(S.f.q)}" aria-label="Search">
       <label>Status <select data-f="status"><option value="">All</option><option value="check" ${S.f.status === "check" ? "selected" : ""}>⚠ Needs checking (IMEI 1)</option><option value="check2" ${S.f.status === "check2" ? "selected" : ""}>IMEI 2 needs checking</option><option value="ok" ${S.f.status === "ok" ? "selected" : ""}>✓ IMEI verified</option><option value="storage" ${S.f.status === "storage" ? "selected" : ""}>Storage missing</option><option value="ram" ${S.f.status === "ram" ? "selected" : ""}>RAM missing</option></select></label>
       <span class="sb-dim" style="margin-left:auto">${list.length} of ${D.rows.length}${D.owner ? " · you see everyone's scans" : " · your scans"}</span>
-      <button class="sb-sec" data-export ${list.length ? "" : "disabled"}>⬇ Excel</button><button class="sb-sec" data-pdf ${list.length ? "" : "disabled"} title="Opens a print view — choose Save as PDF">⬇ PDF with photos</button>
+      <button class="sb-sec" data-export ${list.length ? "" : "disabled"}>⬇ Excel</button><button class="sb-sec" data-pdf ${list.length ? "" : "disabled"} title="Downloads a .zip of PDFs, 500 rows each, with photos">⬇ PDFs with photos (.zip)</button>
       ${D.owner ? `<label class="sb-tog" style="margin:0"><input type="checkbox" data-showremoved ${S.showRemoved ? "checked" : ""}> Show removed${D.removed ? ` (${D.removed})` : ""}</label>` : ""}
       ${(() => { const sel = D.rows.filter((r) => S.pick.has(r.id)), live = sel.filter((r) => !r.hidden).length, gone = sel.filter((r) => r.hidden).length;
         return `${live ? `<button class="sb-sec warn" data-hide>Remove ${live}</button>` : ""}${gone && D.owner ? `<button class="sb-sec" data-restore>Restore ${gone}</button><button class="sb-sec danger" data-purge>Delete ${gone} permanently</button>` : ""}`; })()}</div>
@@ -691,26 +691,13 @@
       return post("/api/scanbox/name-legacy", { name }).then(async (x) => { if (!x.ok) return alert(x.j.error); await loadProjects(); draw(); });
     }
     if (t.hasAttribute("data-pdf")) {
-      // Print view of the filtered rows with each photo beside it; the browser's "Save as PDF" makes the file.
-      const list = rows().filter((r) => !r.hidden), w = window.open("", "_blank");
-      if (!w) return alert("Allow pop-ups for MYDAY to make the PDF.");
-      const e = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-      const carton = S.project && S.project.scanType === "carton";
-      w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${e(S.project ? S.project.name : "Scan Boxes")} — scanned boxes</title><style>
-        body{font:12px -apple-system,"Segoe UI",Roboto,sans-serif;color:#111;margin:18px}h1{font-size:18px;margin:0 0 4px}p{color:#555;margin:0 0 12px}
-        .r{display:flex;gap:12px;border-top:1px solid #ddd;padding:8px 0;page-break-inside:avoid}.r img{width:210px;height:150px;object-fit:contain;background:#f3f3f3;border-radius:6px}
-        .n{width:210px;height:150px;display:flex;align-items:center;justify-content:center;background:#f3f3f3;color:#999;border-radius:6px}
-        .d{flex:1;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;align-content:start}.d b{color:#555;font-weight:600}.m{font-family:ui-monospace,Menlo,monospace}
-        @page{margin:12mm}</style></head><body><h1>${e(S.project ? S.project.name : "Scan Boxes")} — scanned boxes</h1>
-        <p>${list.length} rows · exported ${e(new Date().toLocaleString())}</p>
-        ${list.map((r) => `<div class="r">${r.photoId ? `<img src="/api/scanbox/photo/${e(r.photoId)}" alt="">` : `<div class="n">no photo</div>`}<div class="d">
-          <b>Brand / model</b><span>${e(r.brand)} ${e(r.model)} ${carton ? e(r.productModel) : ""}</span>
-          ${carton ? "" : `<b>Colour · RAM · storage</b><span>${e(r.colour)} · ${e(r.ram)} · ${e(r.storage)}</span>`}
-          <b>IMEI 1</b><span class="m">${e(r.imei1 || "—")}</span>${carton ? "" : `<b>IMEI 2</b><span class="m">${e(r.imei2 || "—")}</span>`}
-          <b>Serial</b><span class="m">${e(r.serial || "—")}</span>${r.source ? `<b>Source</b><span>${e(r.source)}</span>` : ""}${carton ? `<b>Carton</b><span class="m">SSCC ${e(r.sscc)} · GTIN ${e(r.gtin)} · count ${e(r.cartonCount)}</span>` : ""}
-          <b>Scanned</b><span>${e(r.at.slice(0, 16).replace("T", " "))} by ${e(r.byName || r.by)}</span></div></div>`).join("")}
-        <script>Promise.all([...document.images].map(i=>i.complete?1:new Promise(r=>{i.onload=i.onerror=r}))).then(()=>setTimeout(()=>print(),300))<\/script></body></html>`);
-      w.document.close(); return;
+      // The server builds PDFs of 500 rows (with photos) and streams them as one .zip download — nothing opens in the browser.
+      const list = rows().filter((r) => !r.hidden);
+      return post("/api/scanbox/pdf-job", { projectId: S.project && S.project.id, ids: list.map((r) => r.id) }).then((x) => {
+        if (!x.ok) return alert(x.j.error || "Couldn't prepare the PDFs");
+        const c = ctx(); c && c.setToast && c.setToast(`Preparing ${x.j.files} PDF${x.j.files === 1 ? "" : "s"} (${x.j.rows} rows) — the download starts in a moment`);
+        const a = document.createElement("a"); a.href = x.j.url; a.download = ""; document.body.appendChild(a); a.click(); a.remove();
+      });
     }
     if (t.dataset.sbpg) { S.sbPage = Math.max(0, (S.sbPage || 0) + +t.dataset.sbpg); return draw(); }
     if (t.hasAttribute("data-dropphotos")) {

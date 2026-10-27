@@ -1016,6 +1016,23 @@ const server = http.createServer(async (req, res) => {
         const r = p.endsWith("combine") ? scanbox.combineProjects(DATA_DIR, me, (b.ids || []).map(String).slice(0, 50), b.name) : scanbox.nameLegacy(DATA_DIR, me, b.name);
         return json(res, r.error ? 400 : 200, r);
       }
+      if (p === "/api/scanbox/pdf-job" && req.method === "POST") {         // remember which rows to put in the PDFs (10 min)
+        const b = (await rb()) || {}, want = new Set((b.ids || []).map(String));
+        const rows = scanbox.list(DATA_DIR, me, owner).filter((r) => want.has(r.id));
+        const order = new Map((b.ids || []).map((x, i) => [String(x), i])); rows.sort((a, c) => order.get(a.id) - order.get(c.id));
+        const pr = scanbox.project(DATA_DIR, String(b.projectId || ""));
+        const t = require("node:crypto").randomBytes(16).toString("hex");
+        pdfJobs.set(t, { user: me.username, rows, name: (pr ? pr.name : "Scan Boxes").replace(/[^\w .-]+/g, "").trim() || "Scan Boxes", at: Date.now() });
+        for (const [k, v] of pdfJobs) if (Date.now() - v.at > 600e3) pdfJobs.delete(k);
+        return json(res, 200, { url: "/api/scanbox/pdf-zip?t=" + t, files: Math.ceil(rows.length / 500), rows: rows.length });
+      }
+      if (p === "/api/scanbox/pdf-zip" && req.method === "GET") {         // the archive: streams straight to the download
+        const j = pdfJobs.get(String(url.searchParams.get("t") || ""));
+        if (!j || j.user !== me.username) return json(res, 404, { error: "This download has expired — tap PDF with photos again." });
+        pdfJobs.delete(String(url.searchParams.get("t")));
+        res.writeHead(200, { "content-type": "application/zip", "content-disposition": `attachment; filename="${j.name} - photos PDF - ${new Date().toISOString().slice(0, 10)}.zip"`, "cache-control": "no-store", "x-accel-buffering": "no" });
+        return require("./lib/pdfzip").stream(res, { name: j.name, rows: j.rows, photoPath: (id) => path.join(DATA_DIR, "scanbox", "photos", String(id).replace(/[^a-f0-9]/g, "") + ".jpg") }).catch(() => res.end());
+      }
       if (p === "/api/scanbox/drop-photos" && req.method === "POST") {
         if (!owner) return json(res, 403, { error: "Only the owner can delete photos." });
         const b = (await rb()) || {}, pr = scanbox.project(DATA_DIR, String(b.projectId || ""));
@@ -1493,7 +1510,8 @@ setInterval(() => {
 /* Scan Boxes job queue: photos are uploaded quickly and read here, a few at a
    time across all users, so a phone that pauses (camera open, signal drop)
    never loses a photo — it just asks for the result again. */
-const scanJobs = new Map();                       // "user:uploadId" → { status, me, img, result, error }
+const scanJobs = new Map();
+const pdfJobs = new Map();                        // token → rows for a PDF archive download                       // "user:uploadId" → { status, me, img, result, error }
 let scanRunning = 0;
 const SCAN_CONCURRENCY = Math.max(1, Number(process.env.SCAN_CONCURRENCY || 12));     // all users together
 const SCAN_PER_USER = Math.max(1, Number(process.env.SCAN_PER_USER || 4));            // each user's own slots

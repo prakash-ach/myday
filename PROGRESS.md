@@ -1042,6 +1042,18 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   through the signed-in session (nothing public); the print dialog opens once
   the photos have loaded → "Save as PDF". Tested: 10 rows, 10 photos.
 
+### 27 October 2026 — Scan Boxes: PDFs with photos as a .zip (500 rows each)
+- "⬇ PDFs with photos (.zip)" (replaces the in-browser print view, which
+  crashed on big lots): POST /api/scanbox/pdf-job stores the filtered row ids
+  (10 min token) → GET /api/scanbox/pdf-zip streams a zip straight to the
+  download: one PDF per 500 rows, named "<Project> 1-500.pdf", "501-1000" …,
+  4 rows per A4 page with the photo left and details right.
+- `lib/pdfzip.js`: dependency-free; PDFs embed the stored JPEGs as-is
+  (DCTDecode, shared photos reused), zip entries stored with data
+  descriptors; written photo by photo with back-pressure — never the whole lot
+  in memory.
+- Tested: 1,203 rows → zip OK, 3 PDFs (125/125/51 pages), valid, layout checked.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
