@@ -50,6 +50,7 @@
   .mdi-meta label{font-size:11px;color:var(--faint);display:block}
   .mdi-in{width:100%;border:1px solid var(--line);background:var(--glass);color:var(--ink);border-radius:8px;padding:6px 8px;font:inherit;outline:none}
   .mdi-in:focus{border-color:rgba(var(--a-rgb),.65)}
+  .mdi-bulk{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--line,#e3e6ea);font-size:14px}.mdi-bulk span{display:flex;gap:6px;align-items:center}
   .mdi-sum{display:flex;gap:14px;flex-wrap:wrap;padding:10px 18px;font-size:12.5px;color:var(--muted);border-bottom:1px solid var(--line);align-items:center}
   .mdi-sum b{color:var(--ink)}
   .mdi-ok{color:var(--a);font-weight:700}
@@ -407,6 +408,17 @@
         h("div", null, h("label", null, "Status for these"),
           h("select", { class: "mdi-in", onchange: (e) => { O.status = e.target.value; } },
             [["won", "Won / bought"], ["pending", "Pending"], ["lost", "Lost"]].map(([v, l]) => h("option", { value: v, selected: O.status === v ? true : null }, l))))),
+      // Bulk: set grade and/or size on every ticked line at once.
+      on.length ? h("div", { class: "mdi-bulk" },
+        h("b", null, `For the ${on.length} ticked line${on.length === 1 ? "" : "s"}:`),
+        sup && sup.grades && sup.grades.length ? h("span", null, "Grade ",
+          h("select", { class: "mdi-in", id: "mdi-bulk-grade", style: "width:auto" }, h("option", { value: "" }, "— pick —"), sup.grades.map((g) => h("option", { value: g }, g))),
+          h("button", { class: "mdi-sec", onclick: () => { const g = (document.getElementById("mdi-bulk-grade") || {}).value; if (!g) return;
+            O.rows.forEach((r) => { if (r.on) { r.grade = g; r.gradeOk = true; r.gradeHow = "set for all ticked"; r.manual = false; } }); draw(); } }, "Apply")) : h("span", { class: "mdi-note" }, "Choose the supplier to set grades"),
+        h("span", null, "Size ",
+          h("input", { class: "mdi-in", id: "mdi-bulk-size", placeholder: "e.g. 128GB", style: "width:110px" }),
+          h("button", { class: "mdi-sec", onclick: () => { const v = ((document.getElementById("mdi-bulk-size") || {}).value || "").trim(); if (!v) return;
+            O.rows.forEach((r) => { if (r.on) r.size = v; }); draw(); } }, "Apply"))) : null,
       h("div", { class: "mdi-sum" },
         O.rowsSeparate && O.rowsSeparate.length > 1 ? h("label", { style: "display:flex;align-items:center;gap:5px;cursor:pointer", title: "Lines with the same make, model, size, grade, carrier and price become one line with the total quantity" },
           h("input", { type: "checkbox", class: "mdi-ck", checked: O.rows !== O.rowsSeparate, onchange: (e) => { O.rows = e.target.checked ? combineRows(O.rowsSeparate) : O.rowsSeparate; regrade(); draw(); } }),

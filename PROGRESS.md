@@ -1054,6 +1054,13 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   in memory.
 - Tested: 1,203 rows → zip OK, 3 PDFs (125/125/51 pages), valid, layout checked.
 
+### 28 October 2026 — invoice review: bulk Grade and Size
+- Above the totals line: "For the N ticked lines: Grade [supplier's grades]
+  Apply · Size [ ] Apply" — sets grade (gradeOk, "set for all ticked") and/or
+  size on every ticked line; untick lines to leave them out; single lines can
+  still be changed afterwards. (public/invoice.js; not browser-tested — no
+  captured invoice in the test data after the workspace reset.)
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
