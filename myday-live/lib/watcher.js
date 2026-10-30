@@ -149,7 +149,8 @@ async function readOne(dir, userId, id, options, run) {
       const paidMail = PAID_SUBJECT_EARLY.test(msg.subject || "");
       const aiSaysBill = !!(classify && (classify.type === "supplier_invoice" || (classify.type === "order" && classify.actionable)));
       const keep = paidMail || !aiSaysBill ? [] : p.tasks.filter((t) => t.kind === "payment" && t.amount);
-      const extra = r.tasks.filter((t) => !(keep.length && /\bpay\b|invoice|payment/i.test(t.title)) && !(paidMail && /^pay\b/i.test(t.title)));
+      // Only five kinds of email become tasks; anything the AI marks "none" adds no tasks.
+      const extra = r.topic === "none" ? [] : r.tasks.filter((t) => !(keep.length && /\bpay\b|invoice|payment/i.test(t.title)) && !(paidMail && /^pay\b/i.test(t.title)));
       tasks = [...keep, ...extra];
     } catch (e) {
       run.problems.push({ subject: msg.subject, error: "AI: " + String(e && e.message || e) });

@@ -1103,6 +1103,39 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   width for Apple Pencil, palm rejection once a pen is used, eraser, colours.
 - Tested end to end with a stand-in AI.
 
+### 30 October 2026 — Quick Notes pad like Apple Notes
+- Full-height pad (dot grid), ⤢ Full screen hides the list; sticky toolbar:
+  5 colours, sizes (Fine/Pen/Marker/Bold), stroke eraser, ↶ Undo, Clear.
+- Ink stored as strokes (normalised points with pressure + time; saved as
+  `strokes` plus a PNG for the AI/Completed view): streamline smoothing,
+  quadratic-midpoint curves, width from pressure and speed, desynchronized
+  canvas, crisp redraw on resize, palm rejection.
+- Shape snap: hold still ~0.5 s at the end of a stroke → line, ellipse,
+  rectangle or triangle (on-device, no AI), with a small vibration.
+- Live read (toggle) + translation (language picker): after a 1.6 s pause the
+  drawing goes to /api/qn/read (ai.readScribble) → text, objects, translation;
+  "Add text to the note". One AI call per pause while on.
+- Tested: circle and line snapped, ink smooth, live read + Nepali, strokes
+  restored after reopening.
+
+### 30 October 2026 — Quick Notes: free clipart & images
+- "🔎 Clipart & images" on the pad: /api/qn/clip searches Iconify (open-source
+  icons/clipart) or Openverse (Creative Commons images); /api/qn/img proxies
+  the image bytes (only api.iconify.design / api.openverse.org) so they can be
+  placed on the canvas and saved. Placed images are objects in `strokes`
+  ({img dataURL, x, y, w, ar, credit, title}); "✋ Move" drags them; the
+  eraser removes them. Not tested against the live services (sandbox has no
+  access to them); panel, error path and proxy allowlist tested.
+
+### 31 October 2026 — email → tasks only for five kinds of email
+- An IMEI-check service's "order failed" email became a task. The AI now
+  labels every email with a topic: device_invoice, payment_request, pickup,
+  rma, lock_unlock, or none (with explicit "none" examples: IMEI lookup
+  services, account notices, newsletters, shipping, marketing). The watcher
+  drops all AI-suggested tasks when the topic is "none" (lib/watcher.js), so
+  it holds even if the AI suggests a task anyway. Invoice capturing unchanged.
+- Workspace was reset again; v83 rebuilt from the v82 package.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

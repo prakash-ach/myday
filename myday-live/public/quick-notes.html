@@ -7,11 +7,15 @@
 .side{border-right:1px solid var(--line);padding:14px;background:var(--card)}.side h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 6px}
 .item{display:block;width:100%;text-align:left;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:9px 11px;margin:5px 0;cursor:pointer}
 .item small{display:block;color:var(--muted);font-size:12px}.item.on{border-color:var(--a)}
-.main{padding:18px;max-width:980px}button{font:inherit;cursor:pointer}.pri{background:var(--a);color:#fff;border:0;border-radius:10px;padding:9px 16px;font-weight:700}
+.main{padding:14px 18px;max-width:none}button{font:inherit;cursor:pointer}.pri{background:var(--a);color:#fff;border:0;border-radius:10px;padding:9px 16px;font-weight:700}
 .sec{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:8px 13px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}input.title{width:100%;font-size:22px;font-weight:700;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);padding:6px 0}
 textarea{width:100%;min-height:150px;border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--card);color:var(--ink);font:16px/1.5 inherit;resize:vertical}
-.pad{position:relative;border:1px solid var(--line);border-radius:12px;background:#fff;height:min(56vh,520px);touch-action:none;overflow:hidden}
+.pad{position:relative;border:1px solid var(--line);border-radius:14px;background:#fff radial-gradient(#e7ebf0 1px,transparent 1px) 0 0/22px 22px;height:max(460px,calc(100vh - 250px));touch-action:none;overflow:hidden;box-shadow:0 6px 24px -14px rgba(0,0,0,.25)}
+.tools{position:sticky;top:0;z-index:2;background:var(--bg);padding:6px 0}.tools select,.tools label{padding:6px 9px}.live{margin-top:10px}.live pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;font:15px/1.45 inherit}
+.clipbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 10px;margin-bottom:10px}.cres{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:6px;max-height:260px;overflow:auto}
+.ci{border:1px solid var(--line);background:#fff;border-radius:10px;padding:6px;height:78px}.ci img{max-width:100%;max-height:100%;object-fit:contain}.sec.on{border-color:var(--a);color:var(--a)}
+.chip{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:2px 9px;margin:2px;font-size:13px}.wrap.wide{grid-template-columns:1fr}.wrap.wide .side{display:none}
 canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none}.sw{width:24px;height:24px;border-radius:50%;border:2px solid var(--line)}.sw.on{outline:2px solid var(--a)}
 .ai{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}.ai h1,.ai h2,.ai h3{margin:.6em 0 .3em}.ai table{border-collapse:collapse}.ai td,.ai th{border:1px solid var(--line);padding:4px 8px}
 .muted{color:var(--muted)}.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#141a21;color:#fff;padding:9px 16px;border-radius:999px;display:none}
@@ -41,24 +45,90 @@ function list() {
   const sect = (h, arr) => arr.length ? `<h2>${h}</h2>` + arr.sort(by).map((n) => `<button class="item ${cur && cur.id === n.id ? "on" : ""}" data-id="${n.id}">${esc(titleOf(n))}<small>${esc((n.completedAt || n.updatedAt || n.createdAt || "").slice(0, 10))}</small></button>`).join("") : "";
   $("#list").innerHTML = sect("Writing", notes.filter((n) => n.status !== "done")) + sect("Completed notes (A–Z)", notes.filter((n) => n.status === "done")) || `<p class="muted">No notes yet — tap ＋ New.</p>`;
 }
-/* ---------- the pencil: every pen point, smooth curves, pressure, palm rejection ---------- */
-let cv, ctx, drawing = false, pts = [], penSeen = false, colour = "#1d2a44", eraser = false, dirtyDraw = false;
-function setupPad(dataUrl) {
-  cv = $("#cv"); ctx = cv.getContext("2d"); const r = cv.getBoundingClientRect(), dpr = Math.max(1, window.devicePixelRatio || 1);
-  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr); ctx.scale(dpr, dpr); ctx.lineCap = ctx.lineJoin = "round";
-  if (dataUrl) { const im = new Image(); im.onload = () => ctx.drawImage(im, 0, 0, r.width, r.height); im.src = dataUrl; }
-  const P = (e) => { const b = cv.getBoundingClientRect(); return { x: e.clientX - b.left, y: e.clientY - b.top, p: e.pointerType === "pen" ? Math.max(0.1, e.pressure || 0.5) : 0.5 }; };
-  cv.onpointerdown = (e) => { if (e.pointerType === "pen") penSeen = true; if (penSeen && e.pointerType === "touch") return; drawing = true; pts = [P(e)]; cv.setPointerCapture(e.pointerId); };
+/* ---------- ink: smoothed, variable-width strokes; stroke eraser; shape snap; live read ---------- */
+let moving = false, cv, ctx, strokes = [], curS = null, penSeen = false, colour = "#1d2a44", size = 3, eraser = false, dirtyDraw = false, holdT = null, lastMove = null, readT = null, lastRead = "", live = false, lang = "";
+const W = () => cv.getBoundingClientRect().width;
+function setupPad(n) {
+  cv = $("#cv"); ctx = cv.getContext("2d", { desynchronized: true });
+  strokes = Array.isArray(n.strokes) ? JSON.parse(JSON.stringify(n.strokes)) : [];
+  const fit = () => { const r = cv.getBoundingClientRect(), dpr = Math.max(1, devicePixelRatio || 1); cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); redraw(); };
+  fit(); new ResizeObserver(fit).observe(cv);
+  if (!strokes.length && n.drawing) { const im = new Image(); im.onload = () => { cv._bg = im; redraw(); }; im.src = n.drawing; }
+  const P = (e) => { const b = cv.getBoundingClientRect(), w = b.width; return [(e.clientX - b.left) / w, (e.clientY - b.top) / w, e.pointerType === "pen" ? Math.max(0.05, e.pressure || 0.5) : 0.5, e.timeStamp]; };
+  cv.onpointerdown = (e) => {
+    if (e.pointerType === "pen") penSeen = true; if (penSeen && e.pointerType === "touch") return;   // palm rejection
+    cv.setPointerCapture(e.pointerId);
+    if (eraser) { curS = { erase: true }; eraseAt(P(e)); return; }
+    if (moving) { const q = P(e), hit = [...strokes].reverse().find((s) => s.img && q[0] >= s.x && q[0] <= s.x + s.w && q[1] >= s.y && q[1] <= s.y + s.w * (s.ar || 1)); if (hit) curS = { drag: hit, dx: q[0] - hit.x, dy: q[1] - hit.y }; return; }
+    curS = { c: colour, w: size, pts: [P(e)] }; strokes.push(curS); lastMove = P(e);
+  };
   cv.onpointermove = (e) => {
-    if (!drawing) return;
-    for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) pts.push(P(ev));
-    while (pts.length >= 3) {                                     // quadratic curve through midpoints = smooth line
-      const [a, b, c] = pts, m1 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, m2 = { x: (b.x + c.x) / 2, y: (b.y + c.y) / 2 };
-      ctx.globalCompositeOperation = eraser ? "destination-out" : "source-over"; ctx.strokeStyle = colour;
-      ctx.lineWidth = eraser ? 22 : 1.2 + b.p * 3.2; ctx.beginPath(); ctx.moveTo(m1.x, m1.y); ctx.quadraticCurveTo(b.x, b.y, m2.x, m2.y); ctx.stroke(); pts.shift();
+    if (!curS) return;
+    for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) {
+      const q = P(ev);
+      if (curS.erase) { eraseAt(q); continue; }
+      if (curS.drag) { curS.drag.x = q[0] - curS.dx; curS.drag.y = q[1] - curS.dy; redraw(); continue; }
+      const prev = curS.pts[curS.pts.length - 1];
+      const sm = [prev[0] + (q[0] - prev[0]) * 0.55, prev[1] + (q[1] - prev[1]) * 0.55, q[2], q[3]];   // streamline: filters hand wobble
+      curS.pts.push(sm); drawTail(curS);
+      if (Math.hypot((q[0] - lastMove[0]) * W(), (q[1] - lastMove[1]) * W()) > 4) { lastMove = q; clearTimeout(holdT); holdT = setTimeout(() => snap(curS), 520); }
     }
   };
-  cv.onpointerup = cv.onpointercancel = () => { if (!drawing) return; drawing = false; pts = []; dirtyDraw = true; queueSave(); };
+  cv.onpointerup = cv.onpointercancel = () => { clearTimeout(holdT); if (!curS) return; curS = null; dirtyDraw = true; queueSave(); queueRead(); };
+}
+const widthAt = (s, a, b) => { const sp = Math.hypot((b[0] - a[0]) * W(), (b[1] - a[1]) * W()) / Math.max(1, b[3] - a[3]); return s.w * (0.45 + 0.75 * b[2]) * Math.max(0.55, 1.15 - sp * 0.25); };
+function seg(s, k) {   // smooth curve through midpoints, width from pressure and speed
+  const p = s.pts, w = W(), a = p[k - 2], b = p[k - 1], c = p[k];
+  ctx.strokeStyle = s.c; ctx.lineCap = ctx.lineJoin = "round"; ctx.lineWidth = widthAt(s, b, c);
+  ctx.beginPath(); ctx.moveTo((a[0] + b[0]) / 2 * w, (a[1] + b[1]) / 2 * w); ctx.quadraticCurveTo(b[0] * w, b[1] * w, (b[0] + c[0]) / 2 * w, (b[1] + c[1]) / 2 * w); ctx.stroke();
+}
+const imgs = new Map();
+function drawStroke(s) {
+  const w = W();
+  if (s.img) { let im = imgs.get(s.img); if (!im) { im = new Image(); im.onload = redraw; im.src = s.img; imgs.set(s.img, im); } if (im.complete && im.naturalWidth) ctx.drawImage(im, s.x * w, s.y * w, s.w * w, s.w * w * im.naturalHeight / im.naturalWidth); return; }
+  if (s.pts.length < 3 || s.shape) { ctx.strokeStyle = s.c; ctx.lineWidth = s.w * 1.05; ctx.lineCap = ctx.lineJoin = "round"; ctx.beginPath(); s.pts.forEach((q, i) => (i ? ctx.lineTo(q[0] * w, q[1] * w) : ctx.moveTo(q[0] * w, q[1] * w))); if (s.shape === "closed") ctx.closePath(); if (s.pts.length === 1) ctx.lineTo(s.pts[0][0] * w + 0.1, s.pts[0][1] * w); ctx.stroke(); return; }
+  for (let k = 2; k < s.pts.length; k++) seg(s, k);
+}
+function drawTail(s) { if (s.pts.length >= 3) seg(s, s.pts.length - 1); }
+function redraw() { const r = cv.getBoundingClientRect(); ctx.clearRect(0, 0, r.width, r.height); if (cv._bg) ctx.drawImage(cv._bg, 0, 0, r.width, cv._bg.height * r.width / cv._bg.width); strokes.forEach(drawStroke); }
+function eraseAt(q) { const before = strokes.length, w = W(); strokes = strokes.filter((s) => s.erase || (s.img ? !(q[0] >= s.x && q[0] <= s.x + s.w && q[1] >= s.y && q[1] <= s.y + s.w * (s.ar || 1)) : !s.pts.some((p) => Math.hypot((p[0] - q[0]) * w, (p[1] - q[1]) * w) < 14))); if (strokes.length !== before) { redraw(); dirtyDraw = true; } }
+/* Shape snap: hold still at the end of a stroke → perfect line / circle / rectangle / triangle. */
+function snap(s) {
+  if (!s || !s.pts || s.pts.length < 6 || s.shape) return;
+  const w = W(), P = s.pts.map((p) => [p[0] * w, p[1] * w]);
+  let L = 0; for (let i = 1; i < P.length; i++) L += Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]);
+  const xs = P.map((p) => p[0]), ys = P.map((p) => p[1]), x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), bw = x1 - x0, bh = y1 - y0, big = Math.max(bw, bh);
+  const d = Math.hypot(P[0][0] - P[P.length - 1][0], P[0][1] - P[P.length - 1][1]);
+  let out = null, kind = "open";
+  if (L > 20 && d / L > 0.92) out = [P[0], P[P.length - 1]];
+  else if (big > 24 && d < 0.25 * big) {
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, rx = bw / 2, ry = bh / 2;
+    const ell = P.reduce((e, p) => e + Math.abs(((p[0] - cx) / rx) ** 2 + ((p[1] - cy) / ry) ** 2 - 1), 0) / P.length;
+    const near = P.filter((p) => Math.min(Math.abs(p[0] - x0), Math.abs(p[0] - x1)) < 0.12 * bw || Math.min(Math.abs(p[1] - y0), Math.abs(p[1] - y1)) < 0.12 * bh).length / P.length;
+    if (near > 0.9) { out = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]; kind = "closed"; }
+    else if (ell < 0.22) { out = Array.from({ length: 64 }, (_, i) => [cx + rx * Math.cos(i / 64 * 2 * Math.PI), cy + ry * Math.sin(i / 64 * 2 * Math.PI)]); kind = "closed"; }
+    else {   // triangle: farthest pair + farthest point from that line
+      let a = 0, b = 0, best = 0; for (let i = 0; i < P.length; i += 2) for (let j = i + 1; j < P.length; j += 2) { const dd = Math.hypot(P[i][0] - P[j][0], P[i][1] - P[j][1]); if (dd > best) { best = dd; a = i; b = j; } }
+      let c = 0, far = 0; P.forEach((p, i) => { const t = Math.abs((P[b][0] - P[a][0]) * (P[a][1] - p[1]) - (P[a][0] - p[0]) * (P[b][1] - P[a][1])) / best; if (t > far) { far = t; c = i; } });
+      if (far * best / 2 > 0.3 * bw * bh) { out = [P[a], P[c], P[b]]; kind = "closed"; }
+    }
+  }
+  if (!out) return;
+  s.pts = out.map((p) => [p[0] / w, p[1] / w, 0.5, 0]); s.shape = kind; redraw(); dirtyDraw = true;
+  try { navigator.vibrate && navigator.vibrate(12); } catch (e) {}
+}
+function png() { const c = document.createElement("canvas"); c.width = cv.width; c.height = cv.height; const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(cv, 0, 0); return c.toDataURL("image/png"); }
+/* Live read: after a pause, the AI reads the handwriting, lists objects, translates. */
+function queueRead() { if (!live) return; clearTimeout(readT); readT = setTimeout(doRead, 1600); }
+async function doRead() {
+  const sig = JSON.stringify(strokes.length) + ":" + strokes.reduce((n, s) => n + (s.pts ? s.pts.length : 0) + (s.img ? Math.round(s.x * 999 + s.y * 99) : 0), 0) + lang; if (!strokes.length || sig === lastRead) return; lastRead = sig;
+  const box = $("#live"); box.innerHTML = `<span class="muted">reading…</span>`;
+  try {
+    const j = await api("/api/qn/read", { image: png(), lang });
+    box.innerHTML = `${j.text ? `<div><b>Text</b><pre>${esc(j.text)}</pre></div>` : ""}${(j.objects || []).length ? `<div><b>Objects</b> ${j.objects.map((o) => `<span class="chip">${esc(o)}</span>`).join(" ")}</div>` : ""}${j.translation ? `<div><b>Translation (${esc(lang)})</b><pre>${esc(j.translation)}</pre></div>` : ""}
+      ${j.text ? `<button class="sec" id="ins">⤵ Add text to the note</button>` : ""}`;
+    if ($("#ins")) $("#ins").onclick = () => { const x = $("#x"); x.value = (x.value ? x.value + "\n" : "") + (j.translation || j.text); queueSave(); toast("Added to the note"); };
+  } catch (e) { box.innerHTML = `<span class="muted">Couldn't read: ${esc(e.message)}</span>`; }
 }
 function editor() {
   const n = cur; if (!n) { $("#main").innerHTML = `<h1>Quick Notes</h1><p class="muted">Tap ＋ New to start writing. When you're done, tap ✨ Complete note and the AI turns it into a clean, organised note.</p>`; return; }
@@ -70,27 +140,50 @@ function editor() {
       ${n.drawing ? `<h3>Drawing</h3><img src="${n.drawing}" style="max-width:100%;border:1px solid var(--line);border-radius:10px">${a.drawing ? `<p class="muted">${esc(a.drawing)}</p>` : ""}` : ""}</div>`;
     $("#orig").onclick = () => { showOrig = true; editor(); }; $("#redo").onclick = complete; $("#del").onclick = del; return;
   }
-  $("#main").innerHTML = `<input class="title" id="t" placeholder="Title (optional — the AI will name it)" value="${esc(n.draftTitle || "")}">
-    <div class="row"><textarea id="x" placeholder="Type quickly — rough is fine…">${esc(n.text || "")}</textarea></div>
-    <div class="row"><b>Draw / handwrite</b>${["#1d2a44", "#2563eb", "#dc2626", "#16a34a"].map((c) => `<button class="sw ${colour === c && !eraser ? "on" : ""}" data-c="${c}" style="background:${c}"></button>`).join("")}
-      <button class="sec ${eraser ? "on" : ""}" id="er">${eraser ? "✎ Pen" : "⌫ Eraser"}</button><button class="sec" id="clr">Clear drawing</button><span class="muted" id="st"></span></div>
-    <div class="pad"><canvas id="cv"></canvas></div>
+  $("#main").innerHTML = `<button class="sec" id="wide" style="float:right">⤢ ${document.querySelector(".wrap").classList.contains("wide") ? "Show notes" : "Full screen"}</button><input class="title" id="t" placeholder="Title (optional — the AI will name it)" value="${esc(n.draftTitle || "")}">
+    <div class="row"><textarea id="x" style="min-height:90px" placeholder="Type quickly — rough is fine… (or write with the pencil below)">${esc(n.text || "")}</textarea></div>
+    <div class="row tools">${["#1d2a44", "#2563eb", "#dc2626", "#16a34a", "#f59e0b"].map((c) => `<button class="sw ${colour === c && !eraser ? "on" : ""}" data-c="${c}" style="background:${c}" aria-label="colour"></button>`).join("")}
+      <select id="sz" class="sec">${[[2, "Fine"], [3, "Pen"], [5, "Marker"], [8, "Bold"]].map(([v, l]) => `<option value="${v}" ${size == v ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <button class="sec ${eraser ? "on" : ""}" id="er">${eraser ? "✎ Pen" : "⌫ Eraser"}</button><button class="sec" id="undo">↶ Undo</button><button class="sec" id="clip">🔎 Clipart & images</button><button class="sec" id="mv">✋ Move</button><button class="sec" id="clr">Clear</button>
+      <label class="sec"><input type="checkbox" id="lv" ${live ? "checked" : ""}> Live read</label>
+      <select id="lg" class="sec"><option value="">No translation</option>${["English", "Nepali", "Hindi", "Spanish", "French", "Arabic", "Chinese", "Japanese", "Korean", "Vietnamese"].map((l) => `<option ${lang === l ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <span class="muted" id="st"></span><span class="muted">Tip: hold the pen still at the end of a shape to snap it</span></div>
+    <div id="clipbox" class="clipbox" hidden><div class="row"><input id="cq" placeholder="Search free clipart / images — e.g. phone, box, truck, arrow" style="flex:1;padding:9px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)">
+      <select id="cs" class="sec"><option value="icons">Icons & clipart (Iconify)</option><option value="images">Photos & drawings (Openverse, CC)</option></select><button class="pri" id="cgo">Search</button></div><div id="cres" class="cres"></div></div>
+    <div class="pad"><canvas id="cv"></canvas></div><div id="live" class="live"></div>
     <div class="row"><button class="pri" id="done">✨ Complete note</button>${n.status === "done" ? `<button class="sec" id="back">See the AI note</button>` : ""}<button class="sec" id="del">Delete</button></div>`;
-  setupPad(n.drawing);
+  setupPad(n);
+  $("#clip").onclick = () => { const b = $("#clipbox"); b.hidden = !b.hidden; if (!b.hidden) $("#cq").focus(); };
+  $("#mv").onclick = () => { moving = !moving; eraser = false; $("#mv").classList.toggle("on", moving); $("#mv").textContent = moving ? "✎ Draw" : "✋ Move"; };
+  const search = async () => { const q = $("#cq").value.trim(); if (!q) return; $("#cres").innerHTML = `<span class="muted">searching…</span>`;
+    try { const j = await api("/api/qn/clip?src=" + $("#cs").value + "&q=" + encodeURIComponent(q));
+      $("#cres").innerHTML = (j.items || []).map((x, i) => `<button class="ci" data-i="${i}" title="${esc(x.title + " — " + x.credit)}"><img loading="lazy" src="/api/qn/img?u=${encodeURIComponent(x.url)}" alt=""></button>`).join("") || `<span class="muted">Nothing found — try another word.</span>`;
+      $("#cres").onclick = async (e) => { const b = e.target.closest("[data-i]"); if (!b) return; const x = j.items[+b.dataset.i];
+        const blob = await (await fetch("/api/qn/img?u=" + encodeURIComponent(x.url), { credentials: "same-origin" })).blob();
+        const data = await new Promise((ok) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
+        const im = new Image(); im.onload = () => { strokes.push({ img: data, x: 0.35, y: 0.08, w: 0.22, ar: im.naturalHeight / im.naturalWidth || 1, credit: x.credit, title: x.title }); imgs.set(data, im); redraw(); dirtyDraw = true; queueSave(); queueRead();
+          moving = true; $("#mv").classList.add("on"); $("#mv").textContent = "✎ Draw"; toast("Placed — drag it where you want (✋ Move is on)"); }; im.src = data; };
+    } catch (e) { $("#cres").innerHTML = `<span class="muted">${esc(e.message)}</span>`; } };
+  $("#cgo").onclick = search; $("#cq").onkeydown = (e) => { if (e.key === "Enter") search(); };
+  $("#sz").onchange = (e) => { size = +e.target.value; eraser = false; };
+  $("#undo").onclick = () => { strokes.pop(); redraw(); dirtyDraw = true; queueSave(); };
+  $("#lv").onchange = (e) => { live = e.target.checked; lastRead = ""; if (live) doRead(); else $("#live").innerHTML = ""; };
+  $("#lg").onchange = (e) => { lang = e.target.value; lastRead = ""; if (live) doRead(); };
   $("#t").oninput = $("#x").oninput = queueSave;
-  document.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { colour = b.dataset.c; eraser = false; saveNow().then(editor); }));
-  $("#er").onclick = () => { eraser = !eraser; saveNow().then(editor); };
-  $("#clr").onclick = () => { if (!confirm("Clear the drawing?")) return; ctx.clearRect(0, 0, cv.width, cv.height); dirtyDraw = true; saveNow(); };
+  $("#wide").onclick = () => { document.querySelector(".wrap").classList.toggle("wide"); $("#wide").textContent = "⤢ " + (document.querySelector(".wrap").classList.contains("wide") ? "Show notes" : "Full screen"); };
+  document.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { colour = b.dataset.c; eraser = false; document.querySelectorAll("[data-c]").forEach((x) => x.classList.toggle("on", x === b)); $("#er").textContent = "⌫ Eraser"; }));
+  $("#er").onclick = () => { eraser = !eraser; $("#er").textContent = eraser ? "✎ Pen" : "⌫ Eraser"; };
+  $("#clr").onclick = () => { if (!confirm("Clear the drawing?")) return; strokes = []; cv._bg = null; redraw(); dirtyDraw = true; saveNow(); };
   $("#done").onclick = complete; $("#del").onclick = del; if ($("#back")) $("#back").onclick = () => { showOrig = false; editor(); };
 }
 function queueSave() { clearTimeout(saveT); const s = $("#st"); if (s) s.textContent = "…"; saveT = setTimeout(saveNow, 900); }
 async function saveNow() {
   clearTimeout(saveT); if (!cur || !$("#x")) return;
   const body = { id: cur.id, title: $("#t").value, text: $("#x").value };
-  if (dirtyDraw) { body.drawing = blank() ? "" : cv.toDataURL("image/png"); dirtyDraw = false; }
+  if (dirtyDraw) { body.strokes = strokes; body.drawing = strokes.length || cv._bg ? png() : ""; dirtyDraw = false; }
   try { const j = await api("/api/qn/save", body); Object.assign(cur, j.note); const s = $("#st"); if (s) s.textContent = "saved ✓"; list(); } catch (e) { toast("Couldn't save — " + e.message); }
 }
-function blank() { const d = ctx.getImageData(0, 0, cv.width, cv.height).data; for (let i = 3; i < d.length; i += 4) if (d[i]) return false; return true; }
+
 async function complete() {
   if ($("#x")) await saveNow();
   if (!(cur.text || "").trim() && !cur.drawing) return toast("Write or draw something first");

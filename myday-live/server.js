@@ -915,12 +915,32 @@ const server = http.createServer(async (req, res) => {
     const load = () => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { return { notes: [] }; } };
     const save = (d) => { const t = f + ".tmp"; fs.writeFileSync(t, JSON.stringify(d), { mode: 0o600 }); fs.renameSync(t, f); };
     if (p === "/api/qn" && req.method === "GET") return json(res, 200, load());
+    // Free clipart / images: Iconify (open-source icons) and Openverse (Creative Commons) — searched and fetched via the server.
+    if (p === "/api/qn/clip" && req.method === "GET") {
+      const q = String(url.searchParams.get("q") || "").slice(0, 60), src = url.searchParams.get("src");
+      try {
+        if (src === "images") {
+          const r = await fetch("https://api.openverse.org/v1/images/?page_size=24&q=" + encodeURIComponent(q), { headers: { "user-agent": "MYDAY quick notes" } }); const j = await r.json();
+          return json(res, 200, { items: (j.results || []).map((x) => ({ url: "https://api.openverse.org/v1/images/" + x.id + "/thumb/", title: x.title, credit: [x.creator, x.license && "CC " + String(x.license).toUpperCase(), x.source].filter(Boolean).join(" · "), link: x.foreign_landing_url })) });
+        }
+        const r = await fetch("https://api.iconify.design/search?limit=48&query=" + encodeURIComponent(q)); const j = await r.json();
+        return json(res, 200, { items: (j.icons || []).map((n) => { const [pre, name] = n.split(":"); return { url: `https://api.iconify.design/${pre}/${name}.svg?height=256`, title: name, credit: "Iconify · " + pre + " (open-source)" }; }) });
+      } catch (e) { return json(res, 502, { error: "Search isn't reachable right now" }); }
+    }
+    if (p === "/api/qn/img" && req.method === "GET") {
+      const u = String(url.searchParams.get("u") || "");
+      if (!/^https:\/\/api\.(iconify\.design|openverse\.org)\//.test(u)) return json(res, 400, { error: "not allowed" });
+      try { const r = await fetch(u); const buf = Buffer.from(await r.arrayBuffer()); if (buf.length > 3e6) return json(res, 413, { error: "too big" });
+        res.writeHead(200, { "content-type": r.headers.get("content-type") || "image/png", "cache-control": "private, max-age=86400" }); return res.end(buf); }
+      catch (e) { return json(res, 502, { error: "couldn't fetch" }); }
+    }
     let b; try { b = JSON.parse((await body(req)) || "{}"); } catch (e) { return json(res, 400, { error: "bad body" }); }
     const d = load(), now = new Date().toISOString();
     if (p === "/api/qn/save" && req.method === "POST") {
       let n = d.notes.find((x) => x.id === b.id);
       if (!n) { n = { id: require("node:crypto").randomBytes(6).toString("hex"), createdAt: now, status: "draft" }; d.notes.unshift(n); }
       n.text = String(b.text || "").slice(0, 50000); if (b.drawing !== undefined) n.drawing = String(b.drawing || "").slice(0, 3e6);
+      if (b.strokes !== undefined) n.strokes = Array.isArray(b.strokes) ? b.strokes.slice(0, 4000) : [];
       n.draftTitle = String(b.title || "").slice(0, 120); n.updatedAt = now; save(d); return json(res, 200, { note: n });
     }
     if (p === "/api/qn/complete" && req.method === "POST") {
@@ -931,6 +951,11 @@ const server = http.createServer(async (req, res) => {
         n.ai = await ai.finishNote(DATA_DIR, me.id, (n.draftTitle ? "Title: " + n.draftTitle + "\n" : "") + (n.text || ""), img);
         n.status = "done"; n.completedAt = new Date().toISOString(); save(d); return json(res, 200, { note: n });
       } catch (e) { return json(res, 500, { error: String(e.message || e) }); }
+    }
+    if (p === "/api/qn/read" && req.method === "POST") {
+      const img = String(b.image || "").replace(/^data:image\/png;base64,/, "");
+      if (img.length < 100 || img.length > 4e6) return json(res, 400, { error: "No drawing" });
+      try { return json(res, 200, await ai.readScribble(DATA_DIR, me.id, img, String(b.lang || "").slice(0, 30))); } catch (e) { return json(res, 500, { error: String(e.message || e) }); }
     }
     if (p === "/api/qn/delete" && req.method === "POST") { d.notes = d.notes.filter((x) => x.id !== b.id); save(d); return json(res, 200, { ok: true }); }
     return json(res, 404, { error: "not found" });
