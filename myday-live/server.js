@@ -907,6 +907,34 @@ const server = http.createServer(async (req, res) => {
   }
 
   /* ---- Scan Boxes: upload → ticket; the server reads it in its own queue ---- */
+  /* ---- Quick Notes: per person; "Complete note" makes an AI-organised version ---- */
+  if (p.startsWith("/api/qn")) {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const f = path.join(DATA_DIR, "quicknotes-" + me.id + ".json");
+    const load = () => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { return { notes: [] }; } };
+    const save = (d) => { const t = f + ".tmp"; fs.writeFileSync(t, JSON.stringify(d), { mode: 0o600 }); fs.renameSync(t, f); };
+    if (p === "/api/qn" && req.method === "GET") return json(res, 200, load());
+    let b; try { b = JSON.parse((await body(req)) || "{}"); } catch (e) { return json(res, 400, { error: "bad body" }); }
+    const d = load(), now = new Date().toISOString();
+    if (p === "/api/qn/save" && req.method === "POST") {
+      let n = d.notes.find((x) => x.id === b.id);
+      if (!n) { n = { id: require("node:crypto").randomBytes(6).toString("hex"), createdAt: now, status: "draft" }; d.notes.unshift(n); }
+      n.text = String(b.text || "").slice(0, 50000); if (b.drawing !== undefined) n.drawing = String(b.drawing || "").slice(0, 3e6);
+      n.draftTitle = String(b.title || "").slice(0, 120); n.updatedAt = now; save(d); return json(res, 200, { note: n });
+    }
+    if (p === "/api/qn/complete" && req.method === "POST") {
+      const n = d.notes.find((x) => x.id === b.id); if (!n) return json(res, 404, { error: "not found" });
+      if (!ai.configured()) return json(res, 400, { error: "The AI needs the OpenAI key set up." });
+      try {
+        const img = n.drawing && n.drawing.startsWith("data:image/png;base64,") ? n.drawing.split(",")[1] : "";
+        n.ai = await ai.finishNote(DATA_DIR, me.id, (n.draftTitle ? "Title: " + n.draftTitle + "\n" : "") + (n.text || ""), img);
+        n.status = "done"; n.completedAt = new Date().toISOString(); save(d); return json(res, 200, { note: n });
+      } catch (e) { return json(res, 500, { error: String(e.message || e) }); }
+    }
+    if (p === "/api/qn/delete" && req.method === "POST") { d.notes = d.notes.filter((x) => x.id !== b.id); save(d); return json(res, 200, { ok: true }); }
+    return json(res, 404, { error: "not found" });
+  }
   if (p === "/api/scanbox/upload" && req.method === "POST") {
     const me = userFromSession(sessionFor(req));
     if (!me) return json(res, 401, { error: "not signed in" });

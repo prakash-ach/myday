@@ -1080,6 +1080,29 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   tested with a planted fake key + IP) and .gitignore (.env*, *.pem, *.key,
   *secrets*, node_modules, data, logs).
 
+### 30 October 2026 — task print fixed
+- Print showed "0 open tasks": it filtered the task list differently from the
+  screen. Now it prints exactly the tasks shown (titles found on the page, in
+  screen order, open only), so the Open/Overdue/Done/All filter and space are
+  respected. Button placement no longer relies on a <main> element (MYDAY has
+  none): on My day it sits before "Past days"; on All tasks beside Search.
+- Paper kept when printing (print-color-adjust: exact); page-width paper on
+  screen (max 780 px, centred), plain white margins in print.
+- Tested with real tasks: My day and All tasks print the 3 open tasks.
+
+### 30 October 2026 — ✍ Quick Notes
+- New page public/quick-notes.html (link "✍ Quick Notes" injected after Notes in
+  the sidebar and the phone ☰ menu by print.js). Per-person storage
+  data/quicknotes-<userId>.json; /api/qn (list), /api/qn/save (text, title,
+  drawing PNG; autosave), /api/qn/complete (ai.finishNote: title, summary,
+  Markdown body, next steps, drawing description — reads handwriting in the
+  drawing), /api/qn/delete.
+- List: "Writing" drafts and "Completed notes (A–Z)" by title. Completed view:
+  Show my original, Refine again, Print, Delete.
+- Pencil: coalesced pointer events, quadratic-midpoint smoothing, pressure
+  width for Apple Pencil, palm rejection once a pen is used, eraser, colours.
+- Tested end to end with a stand-in AI.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
