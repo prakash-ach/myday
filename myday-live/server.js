@@ -153,6 +153,13 @@ function body(req) {
 const isJson = (req) => (req.headers["content-type"] || "").startsWith("application/json");
 
 async function serveStatic(req, res, urlPath) {
+  // Home Display: the owner only — every file, not just the page.
+  if (urlPath === "/home-display" || urlPath.startsWith("/home-display/")) {
+    const me = userFromSession(sessionFor(req));
+    if (!me || me.username !== ownerName()) { res.writeHead(302, { location: "/" }); return res.end(); }
+    if (urlPath === "/home-display") { res.writeHead(302, { location: "/home-display/" }); return res.end(); }
+    if (urlPath === "/home-display/") urlPath = "/home-display/index.html";
+  }
   const rel = urlPath === "/" ? "index.html" : urlPath.replace(/^\/+/, "");
   const full = path.join(PUBLIC_DIR, rel);
   if (!full.startsWith(PUBLIC_DIR)) return send(res, 403, "Forbidden");

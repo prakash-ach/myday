@@ -78,5 +78,16 @@
       if (notes) notes.insertAdjacentElement("afterend", a); else host.appendChild(a);
     }
   }, 900);
+  // 🖼 Home Display: only on the Personal tab, only for the owner (the server also allows only the owner).
+  setInterval(() => {
+    const c = window.__myday, aside = document.querySelector("aside"); if (!c || !aside) return;
+    const isOwner = c.team && c.team.me ? (c.team.me.owner || c.team.me.role === "owner" || c.team.owner === c.team.me.username) : true;
+    const want = c.space === "personal" && isOwner, el = aside.querySelector("[data-hd]");
+    if (want && !el) {
+      const a = document.createElement("a"); a.href = "/home-display/"; a.setAttribute("data-hd", "1"); a.textContent = "🖼 Home Display";
+      a.style.cssText = "display:flex;align-items:center;gap:10px;padding:9px 12px;margin:2px 0;border-radius:10px;color:inherit;text-decoration:none;font-size:14px";
+      (aside.querySelector("[data-qn]") || aside.lastElementChild).insertAdjacentElement("afterend", a);
+    } else if (!want && el) el.remove();
+  }, 800);
   window.MYDAYPrint = { page, printTasks };
 })();

@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <title>Home display</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-view="photos" data-mode="photos">
+  <main id="stage">
+    <section id="view-photos" class="view" aria-label="Photo frame">
+      <div id="slides"></div>
+      <div id="slides-empty" class="empty-state">
+        <p class="empty-title">No photos to show yet</p>
+        <p>Open Controls, then Photos, to choose pictures from this device.</p>
+      </div>
+    </section>
+
+    <section id="view-cameras" class="view" aria-label="Cameras">
+      <div id="camera-grid" data-count="0"></div>
+      <p id="camera-status" class="camera-status" role="status" hidden></p>
+    </section>
+
+    <section id="view-clock" class="view" aria-label="Clock">
+      <div class="clock">
+        <time id="clock-time"></time>
+        <p id="clock-date"></p>
+      </div>
+    </section>
+
+    <section id="view-dashboard" class="view" aria-label="Dashboard">
+      <!-- The existing calendar, notes and reminders modules mount here.
+           main.js dispatches 'homedisplay:dashboard' with {visible} on show/hide. -->
+      <div id="dashboard-root">
+        <div class="clock clock-small"><time id="dash-time"></time><p id="dash-date"></p></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="doorbell-banner" role="alert" hidden>
+    <p><strong id="doorbell-title">Someone’s at the door</strong> <span id="doorbell-camera"></span></p>
+    <button id="doorbell-dismiss" type="button">Back to previous view</button>
+  </div>
+
+  <div id="dimmer" aria-hidden="true"></div>
+  <div id="blackout" hidden role="button" tabindex="0" aria-label="Turn display back on"></div>
+
+  <button id="controls-toggle" type="button" aria-controls="panel" aria-expanded="false">Controls</button>
+
+  <aside id="panel" aria-labelledby="panel-title" hidden>
+    <header class="panel-head">
+      <h2 id="panel-title">Display</h2>
+      <button id="panel-close" type="button" class="icon-btn" aria-label="Close controls">✕</button>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="Control sections">
+      <button role="tab" id="tab-display" aria-controls="pane-display" aria-selected="true">Display</button>
+      <button role="tab" id="tab-photos" aria-controls="pane-photos" aria-selected="false" tabindex="-1">Photos</button>
+      <button role="tab" id="tab-schedule" aria-controls="pane-schedule" aria-selected="false" tabindex="-1">Schedule</button>
+      <button role="tab" id="tab-device" aria-controls="pane-device" aria-selected="false" tabindex="-1">Device</button>
+    </nav>
+
+    <!-- DISPLAY -->
+    <div class="pane" id="pane-display" role="tabpanel" aria-labelledby="tab-display">
+      <section class="group">
+        <h3>Showing now</h3>
+        <div class="seg" id="mode-buttons">
+          <button type="button" data-mode="photos">Photo frame</button>
+          <button type="button" data-mode="cameras">Cameras</button>
+          <button type="button" data-mode="night">Night surveillance</button>
+          <button type="button" data-mode="dashboard">Dashboard</button>
+        </div>
+        <p class="hint" id="mode-hint"></p>
+        <button type="button" id="btn-follow-schedule" class="text-btn" hidden>Return to schedule</button>
+      </section>
+
+      <section class="group">
+        <h3>Slideshow</h3>
+        <div class="row">
+          <button type="button" id="btn-pause">Pause slideshow</button>
+          <button type="button" id="btn-next">Next photo</button>
+        </div>
+      </section>
+
+      <section class="group">
+        <h3>Screen</h3>
+        <div class="row">
+          <button type="button" id="btn-blackout">Black out screen</button>
+          <button type="button" id="btn-hw-off" hidden>Turn screen off</button>
+        </div>
+        <p class="hint" id="screen-hint">Black out keeps the screen powered and shows black. Tap anywhere to turn it back on. Doorbell alerts still come through.</p>
+        <label class="field">
+          <span>Brightness</span>
+          <input type="range" id="brightness" min="0.05" max="1" step="0.05">
+        </label>
+        <p class="hint" id="brightness-hint"></p>
+        <label class="switch">
+          <input type="checkbox" data-setting="alwaysOn">
+          <span>Keep screen on all the time</span>
+        </label>
+        <p class="status" id="wake-status" role="status"></p>
+      </section>
+    </div>
+
+    <!-- PHOTOS -->
+    <div class="pane" id="pane-photos" role="tabpanel" aria-labelledby="tab-photos" hidden>
+      <section class="group">
+        <h3>Add photos</h3>
+        <div class="row">
+          <label class="btn file-btn">
+            Choose photos
+            <input type="file" id="file-input" accept="image/*" multiple>
+          </label>
+          <button type="button" id="btn-folder" hidden>Choose a folder</button>
+        </div>
+        <label class="field">
+          <span>New photos appear on</span>
+          <select id="import-scope" data-setting="defaultScope">
+            <option value="device">This display only</option>
+            <option value="household">All household displays</option>
+          </select>
+        </label>
+        <div id="import-progress" hidden><progress max="1" value="0"></progress></div>
+        <p class="status" id="import-status" role="status"></p>
+        <ul id="folder-list" class="list"></ul>
+      </section>
+
+      <section class="group">
+        <h3>Albums in the slideshow</h3>
+        <p class="hint">Switch on albums to play only those. With every album off, the slideshow uses all photos marked to show.</p>
+        <ul id="album-list" class="list"></ul>
+        <form id="album-form" class="row">
+          <input id="album-name" placeholder="New album name" maxlength="60" required aria-label="New album name">
+          <button type="submit">Create album</button>
+        </form>
+      </section>
+
+      <section class="group">
+        <h3>Library</h3>
+        <div class="row">
+          <label class="field inline">
+            <span>View</span>
+            <select id="filter-album"></select>
+          </label>
+          <span class="hint" id="library-count"></span>
+        </div>
+        <div class="selection-bar" id="selection-bar" hidden>
+          <span id="sel-count"></span>
+          <div class="row">
+            <button type="button" data-act="show">Show in slideshow</button>
+            <button type="button" data-act="hide">Hide from slideshow</button>
+            <select id="sel-album" aria-label="Add selected photos to album"></select>
+            <button type="button" data-act="unalbum" id="btn-unalbum" hidden>Remove from this album</button>
+            <button type="button" data-act="remove" class="danger">Remove from library</button>
+            <button type="button" data-act="clear" class="text-btn">Clear selection</button>
+          </div>
+        </div>
+        <div id="thumb-grid" class="thumbs" aria-label="Photos. Tap to select."></div>
+        <button type="button" id="btn-more" hidden>Show more</button>
+      </section>
+    </div>
+
+    <!-- SCHEDULE -->
+    <div class="pane" id="pane-schedule" role="tabpanel" aria-labelledby="tab-schedule" hidden>
+      <section class="group">
+        <h3>Daytime</h3>
+        <label class="field"><span>During the day, show</span>
+          <select data-setting="dayMode">
+            <option value="photos">Photo frame</option>
+            <option value="cameras">Cameras</option>
+            <option value="dashboard">Dashboard</option>
+          </select>
+        </label>
+      </section>
+      <section class="group">
+        <h3>Night</h3>
+        <label class="switch"><input type="checkbox" data-setting="nightEnabled"><span>Switch to night view automatically</span></label>
+        <div class="row">
+          <label class="field inline"><span>From</span><input type="time" data-setting="nightStart"></label>
+          <label class="field inline"><span>Until</span><input type="time" data-setting="nightEnd"></label>
+        </div>
+        <label class="field"><span>Night view</span>
+          <select data-setting="nightView">
+            <option value="cameras">Night surveillance (all cameras)</option>
+            <option value="clock">Night clock</option>
+          </select>
+        </label>
+        <label class="switch"><input type="checkbox" data-setting="nightGrayscale"><span>Black-and-white cameras at night</span></label>
+        <p class="hint">The screen stays on at night. Only what it shows changes.</p>
+      </section>
+      <section class="group">
+        <h3>Slideshow</h3>
+        <label class="field"><span>Each photo stays for <output id="out-slide"></output></span>
+          <input type="range" min="4" max="120" step="1" data-setting="slideSeconds" data-output="out-slide" data-unit="s"></label>
+        <label class="field"><span>Transition speed <output id="out-trans"></output></span>
+          <input type="range" min="0.5" max="6" step="0.5" data-setting="transitionSeconds" data-output="out-trans" data-unit="s"></label>
+        <label class="field"><span>Effect</span><select data-setting="effect" id="effect-select"></select></label>
+        <label class="switch"><input type="checkbox" data-setting="shuffle"><span>Shuffle</span></label>
+      </section>
+      <section class="group">
+        <h3>Doorbell</h3>
+        <label class="field"><span>Show the door camera for <output id="out-door"></output></span>
+          <input type="range" min="15" max="300" step="15" data-setting="doorbellHoldSeconds" data-output="out-door" data-unit="s"></label>
+        <label class="switch"><input type="checkbox" data-setting="wakeOnDoorbell"><span>Turn the screen on for the doorbell when blacked out</span></label>
+        <label class="switch"><input type="checkbox" data-setting="cameraFallbackToPhotos"><span>Show photos when cameras are offline</span></label>
+      </section>
+    </div>
+
+    <!-- DEVICE -->
+    <div class="pane" id="pane-device" role="tabpanel" aria-labelledby="tab-device" hidden>
+      <section class="group">
+        <h3>This device</h3>
+        <label class="field"><span>Name</span><input data-setting="deviceName" maxlength="40"></label>
+        <div class="row">
+          <label class="field inline"><span>Profile</span><select id="profile-select"></select></label>
+          <button type="button" id="btn-apply-profile">Apply profile</button>
+        </div>
+        <p class="hint">A profile sets the day view, night view and screen behaviour. Photos are not changed.</p>
+      </section>
+      <section class="group">
+        <h3>Household server</h3>
+        <label class="field"><span>Server address (leave empty if this page is served by it)</span>
+          <input data-setting="serverUrl" type="url" placeholder="https://home.example.net" inputmode="url"></label>
+        <label class="switch"><input type="checkbox" data-setting="syncEnabled"><span>Sync household photos with other displays</span></label>
+        <dl class="facts" id="conn-facts"></dl>
+      </section>
+      <section class="group">
+        <h3>Storage</h3>
+        <dl class="facts" id="storage-facts"></dl>
+      </section>
+      <section class="group">
+        <h3>Keeping the screen on</h3>
+        <dl class="facts" id="power-facts"></dl>
+        <div class="row"><button type="button" id="btn-native-admin" hidden>Allow the app to turn the screen off</button></div>
+        <details class="howto">
+          <summary>Android tablet or phone</summary>
+          <p>For a permanent display, install the Home Display Android app (android/ folder). It holds the screen on, can turn the panel off and on, and can be set as the home app so it starts after a power cut.</p>
+          <p>In a browser only: Settings, Display, Screen timeout, set to the longest value. Turn on Developer options, then “Stay awake” keeps the screen on while charging.</p>
+        </details>
+        <details class="howto">
+          <summary>iPad or iPhone</summary>
+          <p>Settings, Display &amp; Brightness, Auto-Lock, Never. Add this page to the Home Screen and turn on Guided Access to keep it in front.</p>
+        </details>
+        <details class="howto">
+          <summary>Computer, Chromebook or Raspberry Pi</summary>
+          <p>Set display sleep to Never in power settings. On a Raspberry Pi, disable screen blanking in raspi-config and run Chromium with --kiosk.</p>
+        </details>
+      </section>
+    </div>
+  </aside>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

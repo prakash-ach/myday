@@ -1136,6 +1136,18 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   it holds even if the AI suggests a task anyway. Invoice capturing unchanged.
 - Workspace was reset again; v83 rebuilt from the v82 package.
 
+### 31 October 2026 — 🖼 Home Display inside MYDAY (owner only, Personal tab)
+- Prakash's home-display web app (web/ folder) added at public/home-display/,
+  served at /home-display/ on the same droplet. serveStatic only serves
+  /home-display/* to the signed-in owner (ownerName()); everyone else is
+  redirected to "/". Menu link "🖼 Home Display" (print.js) shown only on the
+  Personal tab. Photos stay in the display's browser storage (OPFS/IndexedDB).
+- Not included: its server/photo-sync.js (Express router — MYDAY doesn't use
+  Express), the Android kiosk wrapper (build separately with
+  displayUrl=https://myday.acharyaandcollc.com/home-display/), and the camera /
+  doorbell / realtime backend described in its API contract.
+- Tested: anonymous 302, owner 200 (page + JS), staff 302, menu Personal-only.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.
