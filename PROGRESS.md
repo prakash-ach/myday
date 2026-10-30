@@ -1061,6 +1061,25 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   still be changed afterwards. (public/invoice.js; not browser-tested — no
   captured invoice in the test data after the workspace reset.)
 
+### 29 October 2026 — 🖨 Print tasks (paper view)
+- New public/print.js: a "🖨 Print" button beside Search on the task pages
+  (All tasks, Today). Prints open tasks (overdue → today → upcoming, current
+  space) on lined paper with a red margin, ☐ boxes, category and date (overdue
+  in red), a tilted date card (month/year, day, weekday), handwritten fonts
+  (Patrick Hand / Caveat from Google Fonts; falls back to Segoe Print /
+  Bradley Hand / cursive). Print dialog opens once the fonts are ready.
+- Preview rendered with Prakash's tasks (task-print-preview.png; the
+  sandbox can't load the web fonts, so the preview shows a fallback font).
+
+### 29 October 2026 — security housekeeping
+- Repo scan: no API keys, tokens, passwords, private keys or client secrets;
+  secrets only in /etc/myday/secrets.env on the droplet.
+- Removed the droplet IP addresses from README.md (now <your-droplet-ip>).
+- Added SECURITY.md (reusable checklist for every project), check-secrets.sh
+  (run before uploading; stops on keys/tokens/private keys/passwords/IPs —
+  tested with a planted fake key + IP) and .gitignore (.env*, *.pem, *.key,
+  *secrets*, node_modules, data, logs).
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

@@ -21,7 +21,7 @@ git clone https://github.com/prakash-ach/myday /opt/myday && cd /opt/myday && ba
 
 | Type | Name | Content | Proxy |
 | --- | --- | --- | --- |
-| A | `myday` | `134.209.76.25` | **DNS only** (grey) |
+| A | `myday` | `<your-droplet-ip>` | **DNS only** (grey) |
 
 Grey cloud until the site loads over https, then switch it to Proxied and set
 SSL/TLS to **Full (strict)**.
@@ -62,7 +62,7 @@ cd /opt/myday && DATA_DIR=/var/lib/myday node manage.js passwd yourname
 
 **Copy your data to your PC:**
 ```
-scp -r root@134.209.76.25:/var/lib/myday ./myday-backup
+scp -r root@<your-droplet-ip>:/var/lib/myday ./myday-backup
 ```
 
 **Update after I send new files:** upload to GitHub, then on the droplet:
