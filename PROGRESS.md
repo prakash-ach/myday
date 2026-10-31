@@ -1197,6 +1197,22 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   dark, phone width. No console errors. Weather and cameras used sample
   data (sandbox has no outside access); real Nest connection untested.
 
+### 31 October 2026 — Home Display: cameras first, doorbell rings (v87)
+- Nest connected on the live site (4 cameras streaming).
+- New standard layout "Cameras first": cameras 7 of 12 columns (~60%),
+  clock, today, weather and a note as small cards on the right. Edit
+  dashboard, Layouts switches between "Cameras first" and "Everything even"
+  and keeps the note text and weather place. New displays start camera-first.
+- Doorbell: Google Pub/Sub pushes Nest events to POST
+  /api/home/nest/events?token=NEST_EVENTS_TOKEN (no session; constant-time
+  token check; rings older than 2 min ignored). Displays long-poll
+  GET /api/home/events (25 s) and on a Chime jump to that camera, wake from
+  blackout if allowed, and return after the hold time. Owner-only
+  "Test doorbell" in Controls, Cameras. Rings kept in memory only.
+- Tested: wrong token 404, stale ring ignored, ring shows the door camera +
+  banner, Back returns, blackout wakes and returns to black, staff/home
+  can't send test rings, layouts keep the note. No console errors.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

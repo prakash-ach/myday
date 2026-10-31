@@ -32,6 +32,18 @@ const scanbox = require("./lib/scanbox");
 const repairExport = require("./lib/repairExport");
 const nest = require("./lib/nest");
 const home = require("./lib/home");
+/* Doorbell rings for Home Display: a short in-memory list plus the displays
+   waiting for the next one (long poll, so no websocket is needed). */
+const homeEvents = {
+  seq: 0, list: [], waiters: new Set(),
+  push(ev) {
+    const e = { ...ev, seq: ++this.seq, at: Date.now() };
+    this.list = [...this.list.slice(-19), e];
+    for (const w of this.waiters) w();
+    this.waiters.clear();
+  },
+  after(n) { return this.list.filter((e) => e.seq > n && Date.now() - e.at < 120000); },
+};
 /* Recent saved versions, so a save can be merged against the version that
    device started from. Kept in memory; after a restart the merge just keeps
    everything from both sides. */
@@ -291,6 +303,29 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { username: u.username, displayName: u.displayName || u.username });
   }
 
+  /* ---------------- Nest events (doorbell) ----------------
+   * Google Pub/Sub pushes Nest events here. No session: the subscription's
+   * URL carries NEST_EVENTS_TOKEN, compared in constant time. Rings are kept
+   * in memory and handed to displays waiting on /api/home/events. */
+  if (p === "/api/home/nest/events" && req.method === "POST") {
+    const want = nest.eventsToken();
+    const got = String(url.searchParams.get("token") || "");
+    const ok = want && got.length === want.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(want));
+    if (!ok) return json(res, 404, { error: "not found" });
+    let b; try { b = JSON.parse(await body(req)); } catch (e) { return send(res, 204, ""); }
+    try {
+      const ev = JSON.parse(Buffer.from(String((b.message || {}).data || ""), "base64").toString("utf8"));
+      const ru = ev.resourceUpdate || {};
+      const cameraId = String(ru.name || "").split("/").pop();
+      const age = Date.now() - Date.parse(ev.timestamp || 0);
+      if (ru.events && ru.events["sdm.devices.events.DoorbellChime.Chime"] && age < 120000 && /^[A-Za-z0-9_-]{8,200}$/.test(cameraId)) {
+        homeEvents.push({ type: "doorbell", cameraId });
+        console.log("[home] doorbell rang");
+      }
+    } catch (e) { /* not an event we understand: acknowledge and move on */ }
+    return send(res, 204, "");
+  }
+
   /* ---------------- Home Display ----------------
    * The owner and home-only accounts. Tasks are read, never changed.
    * Connecting Nest is the owner's alone; both may watch the cameras. */
@@ -303,7 +338,7 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/api/home/session" && req.method === "GET") {
       return json(res, 200, { role: isOwner ? "owner" : "home", name: me.displayName || me.username,
-        nest: { configured: nest.isConfigured(), connected: nest.isConnected(DATA_DIR) } });
+        nest: { configured: nest.isConfigured(), connected: nest.isConnected(DATA_DIR), events: !!nest.eventsToken() } });
     }
     if (p === "/api/home/today" && req.method === "GET") {
       const db = readJson(usersFile()) || { users: [] };
@@ -312,6 +347,26 @@ const server = http.createServer(async (req, res) => {
       const st = readJson(stateFile(owner.id, "myday_proto_v1"));
       let v = st && st.value; if (typeof v === "string") { try { v = JSON.parse(v); } catch (e) { v = {}; } }
       return json(res, 200, home.today(v));
+    }
+    if (p === "/api/home/events" && req.method === "GET") {
+      const since = Number(url.searchParams.get("since"));
+      if (!Number.isFinite(since) || since < 0) return json(res, 200, { seq: homeEvents.seq, events: [] });
+      const now = homeEvents.after(since);
+      if (now.length) return json(res, 200, { seq: homeEvents.seq, events: now });
+      let done = false;
+      const finish = () => { if (done) return; done = true; clearTimeout(t); homeEvents.waiters.delete(finish); json(res, 200, { seq: homeEvents.seq, events: homeEvents.after(since) }); };
+      const t = setTimeout(finish, 25000);
+      homeEvents.waiters.add(finish);
+      req.on("close", () => { if (!done) { done = true; clearTimeout(t); homeEvents.waiters.delete(finish); } });
+      return;
+    }
+    if (p === "/api/home/events/test" && req.method === "POST") {
+      if (!isOwner) return json(res, 403, { error: "Only the owner can test the doorbell." });
+      let cams = []; try { cams = await nest.cameras(DATA_DIR); } catch (e) {}
+      const door = cams.find((c) => c.kind === "DOORBELL") || cams[0];
+      homeEvents.push({ type: "doorbell", cameraId: door ? door.id : "", test: true });
+      console.log(`[home] doorbell test by ${me.username}`);
+      return json(res, 200, { ok: true, camera: door ? door.name : "" });
     }
     if (p === "/api/home/layout") {
       const id = url.searchParams.get("display") || "";

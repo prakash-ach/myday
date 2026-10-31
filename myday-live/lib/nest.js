@@ -4,6 +4,8 @@
  *   NEST_PROJECT_ID       the Device Access project ID (required)
  *   NEST_CLIENT_ID        OAuth client linked to that project
  *   NEST_CLIENT_SECRET      (both optional: GOOGLE_CLIENT_ID / _SECRET are used if absent)
+ *   NEST_EVENTS_TOKEN     random string in the Pub/Sub push URL, so doorbell rings
+ *                         reach /api/home/nest/events (optional).
  *   NEST_REFRESH_TOKEN    optional: a refresh token made elsewhere. Without it,
  *                         the owner connects once from Home Display and the token
  *                         is kept in DATA_DIR/nest-tokens.json (mode 600).
@@ -145,5 +147,7 @@ const startStream = (dir, id, offerSdp) => command(dir, id, "sdm.devices.command
 const extendStream = (dir, id, mediaSessionId) => command(dir, id, "sdm.devices.commands.CameraLiveStream.ExtendWebRtcStream", { mediaSessionId });
 const stopStream = (dir, id, mediaSessionId) => command(dir, id, "sdm.devices.commands.CameraLiveStream.StopWebRtcStream", { mediaSessionId });
 
-module.exports = { isConfigured, isConnected, authUrl, exchangeCode, readTokens, writeTokens, forget,
+const eventsToken = () => { const t = google.secrets().NEST_EVENTS_TOKEN || ""; return t.length >= 16 ? t : ""; };
+
+module.exports = { eventsToken, isConfigured, isConnected, authUrl, exchangeCode, readTokens, writeTokens, forget,
   cameras, startStream, extendStream, stopStream };

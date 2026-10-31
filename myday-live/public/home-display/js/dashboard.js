@@ -9,14 +9,29 @@ import { WIDGETS, DEFAULT_PLACE } from './widgets.js';
 const COLS = 12, ROWS = 8;
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-export function defaultLayout() {
+// Cameras take the left 7 of 12 columns (about 60%); small cards on the right.
+export function camerasFirstLayout(keep = []) {
+  const note = keep.find((i) => i.type === 'sticky');
+  const place = keep.find((i) => i.type === 'weather');
+  return [
+    { type: 'cameras', x: 0, y: 0, w: 7, h: 8, config: { view: 'focus' } },
+    { type: 'clock', x: 7, y: 0, w: 5, h: 2, config: {} },
+    { type: 'reminders', x: 7, y: 2, w: 5, h: 3, config: { space: 'all', showDone: true } },
+    { type: 'weather', x: 7, y: 5, w: 3, h: 3, config: place ? { ...place.config } : { ...DEFAULT_PLACE } },
+    { type: 'sticky', x: 10, y: 5, w: 2, h: 3, config: note ? { ...note.config } : { color: 'butter', text: '' } },
+  ].map((it) => ({ id: uid(), ...it }));
+}
+
+export function evenLayout(keep = []) {
+  const note = keep.find((i) => i.type === 'sticky');
+  const place = keep.find((i) => i.type === 'weather');
   return [
     { type: 'clock', x: 0, y: 0, w: 5, h: 3, config: {} },
-    { type: 'weather', x: 5, y: 0, w: 3, h: 3, config: { ...DEFAULT_PLACE } },
+    { type: 'weather', x: 5, y: 0, w: 3, h: 3, config: place ? { ...place.config } : { ...DEFAULT_PLACE } },
     { type: 'reminders', x: 8, y: 0, w: 4, h: 5, config: { space: 'all', showDone: true } },
     { type: 'cameras', x: 0, y: 3, w: 5, h: 5, config: { view: 'grid2' } },
     { type: 'photos', x: 5, y: 3, w: 3, h: 5, config: { seconds: 20 } },
-    { type: 'sticky', x: 8, y: 5, w: 4, h: 3, config: { color: 'butter', text: '' } },
+    { type: 'sticky', x: 8, y: 5, w: 4, h: 3, config: note ? { ...note.config } : { color: 'butter', text: '' } },
   ].map((it) => ({ id: uid(), ...it }));
 }
 
@@ -75,7 +90,7 @@ export class Dashboard extends EventTarget {
     try { remote = (await apiFetch(`/home/layout?display=${deviceId}`)).layout; } catch { /* offline: use local */ }
     const pick = [local, remote].filter((l) => l && Array.isArray(l.items) && l.items.length)
       .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
-    this.items = pick ? pick.items.filter((it) => WIDGETS[it.type]) : defaultLayout();
+    this.items = pick ? pick.items.filter((it) => WIDGETS[it.type]) : camerasFirstLayout();
     this.updatedAt = pick?.updatedAt || 0;
     if (!pick) this.save(true);
     this.render();
@@ -208,10 +223,11 @@ export class Dashboard extends EventTarget {
     this.save();
   }
 
-  reset() {
+  reset(which = 'cameras') {
+    const keep = this.items;
     for (const c of this.cards.values()) { c.inst.destroy?.(); c.el.remove(); }
     this.cards.clear();
-    this.items = defaultLayout();
+    this.items = which === 'even' ? evenLayout(keep) : camerasFirstLayout(keep);
     this.render();
     this.save(true);
   }

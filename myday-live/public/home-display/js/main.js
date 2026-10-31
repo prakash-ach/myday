@@ -181,7 +181,22 @@ async function boot() {
   };
 
   // ---- realtime events --------------------------------------------------------
-  realtime.on('doorbell', ({ cameraId }) => {
+  // Doorbell rings from MYDAY (Nest via Google Pub/Sub), by long poll.
+  (async function listenForRings() {
+    let since = -1, wait = 0;
+    for (;;) {
+      try {
+        const r = await apiFetch(`/home/events?since=${since}`);
+        if (since >= 0) for (const ev of r.events || []) if (ev.type === 'doorbell') onDoorbell(ev);
+        since = r.seq;
+        wait = 0;
+      } catch (err) {
+        wait = Math.min(30_000, (wait || 2000) * 2);
+        await new Promise((ok) => setTimeout(ok, err.status === 401 ? 60_000 : wait));
+      }
+    }
+  })();
+  function onDoorbell({ cameraId }) {
     const wasDark = display.blackout || display.hardwareOff;
     if (wasDark) {
       if (!settings.values.wakeOnDoorbell) return; // owner chose to stay dark
@@ -189,7 +204,8 @@ async function boot() {
       display.wakeUp('doorbell');
     }
     modes.doorbell(cameraId);
-  });
+  }
+  realtime.on('doorbell', onDoorbell);
   realtime.on('display', (m) => {
     // Remote control from the household phone app.
     const map = {

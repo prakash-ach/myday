@@ -313,9 +313,9 @@ function cameras(el, api) {
 
 /* ---------------- registry ---------------- */
 export const WIDGETS = {
-  clock: { name: 'Date and time', blurb: 'Big clock in Eastern time.', size: [5, 3], min: [3, 2], create: clock,
+  clock: { name: 'Date and time', blurb: 'Big clock in Eastern time.', size: [5, 3], min: [2, 2], create: clock,
     options: [{ key: 'seconds', label: 'Show seconds', type: 'toggle' }, { key: 'h24', label: '24-hour clock', type: 'toggle' }] },
-  reminders: { name: 'Reminders', blurb: 'Today’s tasks from MYDAY. Read only.', size: [4, 5], min: [3, 3], create: reminders,
+  reminders: { name: 'Reminders', blurb: 'Today’s tasks from MYDAY. Read only.', size: [4, 5], min: [2, 2], create: reminders,
     options: [
       { key: 'space', label: 'Show', type: 'select', choices: { all: 'Personal and company', personal: 'Personal only', company: 'Company only' } },
       { key: 'showDone', label: 'Keep finished tasks, crossed out', type: 'toggle', default: true },

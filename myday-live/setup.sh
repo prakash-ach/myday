@@ -284,6 +284,8 @@ if [ ! -f /etc/myday/secrets.env ]; then
 # Only if Device Access is linked to a different OAuth client than Gmail:
 # NEST_CLIENT_ID=
 # NEST_CLIENT_SECRET=
+# Doorbell rings: any long random string, also put in the Pub/Sub push URL.
+# NEST_EVENTS_TOKEN=
 SEC
   ok "created /etc/myday/secrets.env, waiting for your Google details"
 else

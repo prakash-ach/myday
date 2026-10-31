@@ -18,8 +18,13 @@ export function initDashUI({ dashboard, actions, session, refreshSession }) {
   $('#btn-edit-dash').addEventListener('click', () => setEditing(true));
   $('#btn-edit-done').addEventListener('click', () => setEditing(false));
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && dashboard.editing && !document.querySelector('dialog[open]')) setEditing(false); });
-  $('#btn-reset-layout').addEventListener('click', () => {
-    if (confirm('Put the dashboard back to the standard layout? Notes written on this display’s sticky notes will be cleared.')) dashboard.reset();
+  const layoutSheet = $('#layout-sheet');
+  $('#btn-reset-layout').addEventListener('click', () => layoutSheet.showModal());
+  layoutSheet.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-layout]');
+    if (!b) return;
+    layoutSheet.close();
+    dashboard.reset(b.dataset.layout);
   });
 
   /* ---------- add ---------- */
@@ -105,8 +110,20 @@ export function initDashUI({ dashboard, actions, session, refreshSession }) {
     con.hidden = !(owner && s.nest.configured);
     con.textContent = s.nest.connected ? 'Connect Nest again' : 'Connect Nest';
     dis.hidden = !(owner && s.nest.connected);
+    const ring = $('#ring-status'), test = $('#btn-ring-test');
+    test.hidden = !(owner && s.nest.connected);
+    ring.textContent = !s.nest.connected ? ''
+      : s.nest.events ? 'Doorbell rings are switched on: a ring brings up the door camera.'
+        : 'Doorbell rings aren’t switched on yet (NEST_EVENTS_TOKEN and the Google Pub/Sub subscription).';
   }
   $('#controls-toggle').addEventListener('click', () => { if (!$('#panel').hidden) renderNest(); });
+  $('#btn-ring-test').addEventListener('click', async () => {
+    try {
+      const r = await apiFetch('/home/events/test', { method: 'POST', json: {} });
+      $('#ring-status').textContent = `Test ring sent${r.camera ? ` for ${r.camera}` : ''}. Every Home Display should show the door camera now.`;
+      $('#panel-close').click();
+    } catch { $('#ring-status').textContent = 'Couldn’t send a test ring.'; }
+  });
   $('#btn-nest-connect').addEventListener('click', async () => {
     try { location.href = (await apiFetch('/home/nest/connect')).url; }
     catch { $('#nest-status').textContent = 'Couldn’t start connecting Nest. Check the server’s Nest settings.'; }

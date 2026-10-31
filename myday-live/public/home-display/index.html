@@ -61,7 +61,7 @@
   <div class="edit-bar" id="edit-bar" role="toolbar" aria-label="Editing the dashboard" hidden>
     <p class="edit-hint">Drag cards to move them. Drag the corner to resize.</p>
     <button type="button" id="btn-add-widget" class="pill-btn">Add widget</button>
-    <button type="button" id="btn-reset-layout" class="pill-btn ghost">Reset layout</button>
+    <button type="button" id="btn-reset-layout" class="pill-btn ghost">Layouts</button>
     <button type="button" id="btn-edit-done" class="pill-btn strong">Done</button>
   </div>
 
@@ -69,6 +69,17 @@
     <form method="dialog">
       <header class="sheet-head"><h2 id="add-title">Add a widget</h2><button class="icon-btn" value="close" aria-label="Close">✕</button></header>
       <ul id="add-list" class="add-list"></ul>
+    </form>
+  </dialog>
+
+  <dialog id="layout-sheet" class="sheet" aria-labelledby="layout-title">
+    <form method="dialog">
+      <header class="sheet-head"><h2 id="layout-title">Start from a layout</h2><button class="icon-btn" value="close" aria-label="Close">✕</button></header>
+      <ul class="add-list">
+        <li><button type="button" class="add-item" data-layout="cameras"><span class="add-name">Cameras first</span><span class="add-blurb">Cameras fill about 60% of the screen, with clock, today, weather and a note as small cards on the side.</span></button></li>
+        <li><button type="button" class="add-item" data-layout="even"><span class="add-name">Everything even</span><span class="add-blurb">Clock, weather, today, cameras, photos and a note at similar sizes.</span></button></li>
+      </ul>
+      <p class="hint">Your sticky note text and weather place are kept.</p>
     </form>
   </dialog>
 
@@ -140,7 +151,9 @@
         </label>
         <p class="hint">Hold a camera for a moment, then drag it onto another to swap them.</p>
         <p class="status" id="nest-status" role="status"></p>
+        <p class="status" id="ring-status" role="status"></p>
         <div class="row">
+          <button type="button" id="btn-ring-test" hidden>Test doorbell</button>
           <button type="button" id="btn-nest-connect" hidden>Connect Nest</button>
           <button type="button" id="btn-nest-disconnect" class="text-btn" hidden>Disconnect Nest</button>
         </div>
