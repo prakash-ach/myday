@@ -9,7 +9,7 @@ export const DEFAULTS = {
   syncEnabled: false,
 
   // What to show
-  dayMode: 'photos',        // 'photos' | 'cameras' | 'dashboard'
+  dayMode: 'dashboard',     // 'dashboard' | 'photos' | 'cameras'
   nightEnabled: true,
   nightStart: '21:00',
   nightEnd: '06:00',
@@ -21,6 +21,12 @@ export const DEFAULTS = {
   transitionSeconds: 2.5,
   effect: 'random',
   shuffle: true,
+
+  // Look
+  theme: 'auto',            // 'auto' (light by day, dark by night) | 'light' | 'dark'
+  backdrop: 'gradient',     // 'gradient' | 'photos'
+  cameraView: 'grid2',      // full-screen cameras: 'single' | 'grid2' | 'grid3' | 'focus'
+  cameraOrder: [],          // camera ids in the order they're shown
 
   // Screen
   alwaysOn: true,
@@ -40,12 +46,12 @@ export const DEFAULTS = {
 export const PROFILES = {
   livingRoom: {
     label: 'Living room display',
-    values: { deviceName: 'Living room display', dayMode: 'photos', nightEnabled: true,
+    values: { deviceName: 'Living room display', dayMode: 'dashboard', nightEnabled: true,
       nightView: 'cameras', alwaysOn: true, defaultScope: 'household' },
   },
   bedroom: {
     label: 'Bedroom display',
-    values: { deviceName: 'Bedroom display', dayMode: 'photos', nightEnabled: true,
+    values: { deviceName: 'Bedroom display', dayMode: 'dashboard', nightEnabled: true,
       nightView: 'clock', alwaysOn: true, defaultScope: 'device' },
   },
   phone: {

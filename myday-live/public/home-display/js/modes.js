@@ -7,6 +7,8 @@
 //                            otherwise the configured day mode
 // Mode changes never turn the screen off.
 
+import { minutesNow } from './tz.js';
+
 const toMinutes = (s) => { const [h, m] = String(s).split(':').map(Number); return (h || 0) * 60 + (m || 0); };
 
 export class ModeManager extends EventTarget {
@@ -33,7 +35,7 @@ export class ModeManager extends EventTarget {
   isNight(date = new Date()) {
     const s = this.settings.values;
     if (!s.nightEnabled) return false;
-    const m = date.getHours() * 60 + date.getMinutes();
+    const m = minutesNow(date); // Eastern, whatever the tablet's own zone
     const a = toMinutes(s.nightStart), b = toMinutes(s.nightEnd);
     if (a === b) return false;
     return a < b ? m >= a && m < b : m >= a || m < b;

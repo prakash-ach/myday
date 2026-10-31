@@ -63,7 +63,7 @@ class CameraTile extends EventTarget {
     this.detail = detail;
     this.el.dataset.state = state;
     this.badge.textContent = {
-      live: 'Live', connecting: 'Connecting…', offline: detail || 'Offline', idle: '',
+      live: 'Live', connecting: 'Connecting…', offline: detail || 'Offline', idle: '', unsupported: detail,
     }[state] ?? '';
     this.dispatchEvent(new Event('status'));
   }
@@ -76,6 +76,7 @@ class CameraTile extends EventTarget {
   }
 
   stop() {
+    if (!this.active && this.state === 'idle') return;
     this.active = false;
     this.teardown();
     this.setStatus('idle');
@@ -106,6 +107,10 @@ class CameraTile extends EventTarget {
     if (!this.active) return;
     const gen = this.gen;
     this.setStatus('connecting');
+    if (this.cam.protocol !== 'webrtc' && this.cam.protocol !== 'snapshot') {
+      this.setStatus('unsupported', this.cam.note || 'This camera can’t stream to a browser.');
+      return;
+    }
     try {
       if (this.cam.protocol === 'snapshot') await this.#startSnapshots(gen);
       else await this.#startWebRtc(gen);
@@ -210,16 +215,73 @@ class CameraTile extends EventTarget {
   }
 }
 
+// How many tiles each view shows. Tiles outside the view are stopped, so a
+// 2×2 view never holds more than four Nest streams open.
+export const CAMERA_VIEWS = {
+  single: { label: 'Single', cap: 1 },
+  grid2: { label: '2×2', cap: 4 },
+  grid3: { label: '3×3', cap: 9 },
+  focus: { label: 'Big + small', cap: 5 },
+};
+
 export class CameraWall extends EventTarget {
-  constructor(root) {
+  constructor({ getOrder, setOrder }) {
     super();
-    this.root = root;
+    this.root = document.createElement('div');
+    this.root.className = 'camera-grid';
+    this.root.dataset.count = '0';
+    this.getOrder = getOrder;
+    this.setOrder = setOrder;
     this.tiles = new Map();
+    this.view = 'grid2';
     this.active = false;
     this.focusId = null;
-    this.listState = 'unknown'; // unknown | ok | unconfigured | unauthorized | offline
+    this.listState = 'unknown'; // unknown | ok | unconfigured | notConnected | unauthorized | offline
     this.listTimer = null;
     window.addEventListener('online', () => { if (this.active) this.refreshList(); });
+    this.#bindDrag();
+  }
+
+  /** Move the grid into a container (full-screen view or the dashboard widget). */
+  mount(container) {
+    if (this.root.parentNode === container) return;
+    container.append(this.root);
+    for (const t of this.tiles.values()) if (t.video.srcObject) t.video.play().catch(() => {});
+  }
+
+  setView(view) {
+    if (!CAMERA_VIEWS[view] || view === this.view) return;
+    this.view = view;
+    this.#arrange();
+  }
+
+  /** Ids in display order: the saved order first, new cameras after. */
+  orderedIds() {
+    const saved = (this.getOrder() || []).filter((id) => this.tiles.has(id));
+    return [...saved, ...[...this.tiles.keys()].filter((id) => !saved.includes(id))];
+  }
+
+  swap(a, b) {
+    const ids = this.orderedIds();
+    const i = ids.indexOf(a), j = ids.indexOf(b);
+    if (i < 0 || j < 0 || i === j) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    this.setOrder(ids);
+    this.#arrange();
+  }
+
+  rotate(step) {
+    const ids = this.orderedIds();
+    if (ids.length < 2) return;
+    const next = step > 0 ? [...ids.slice(1), ids[0]] : [ids[ids.length - 1], ...ids.slice(0, -1)];
+    this.setOrder(next);
+    this.#arrange();
+  }
+
+  promote(id) {
+    const ids = this.orderedIds();
+    if (!ids.includes(id) || ids[0] === id) return;
+    this.swap(ids[0], id);
   }
 
   async refreshList() {
@@ -240,44 +302,109 @@ export class CameraWall extends EventTarget {
           tile.cam = cam;
           tile.nameEl.textContent = cam.name;
         }
-        if (this.active) tile.start();
       }
       for (const [id, tile] of this.tiles) {
         if (!seen.has(id)) { tile.stop(); tile.el.remove(); this.tiles.delete(id); }
       }
-      this.root.dataset.count = String(this.tiles.size);
-      this.#applyFocus();
       this.listTimer = setTimeout(() => this.refreshList(), 15 * 60_000);
     } catch (err) {
       this.listState = err.unconfigured ? 'unconfigured'
-        : err.status === 401 || err.status === 403 ? 'unauthorized'
-          : err.status === 404 ? 'unconfigured' : 'offline';
-      if (this.active) this.listTimer = setTimeout(() => this.refreshList(), 30_000);
+        : err.status === 409 ? 'notConnected'
+          : err.status === 401 || err.status === 403 ? 'unauthorized'
+            : err.status === 404 ? 'unconfigured' : 'offline';
+      if (this.active && this.listState === 'offline') this.listTimer = setTimeout(() => this.refreshList(), 30_000);
     }
+    this.#arrange();
     this.#emit();
   }
 
   setActive(on, { focusCameraId = null } = {}) {
     this.focusId = focusCameraId;
-    this.#applyFocus();
-    if (on === this.active) {
-      if (on && focusCameraId) this.tiles.get(focusCameraId)?.start();
-      return;
-    }
+    const changed = on !== this.active;
     this.active = on;
-    if (on) {
-      if (this.listState !== 'ok') this.refreshList();
-      for (const t of this.tiles.values()) t.start();
-    } else {
-      clearTimeout(this.listTimer);
-      for (const t of this.tiles.values()) t.stop();
-    }
-    this.#emit();
+    if (on && changed && this.listState !== 'ok') this.refreshList();
+    if (!on) clearTimeout(this.listTimer);
+    this.#arrange();
+    if (changed) this.#emit();
   }
 
-  #applyFocus() {
-    this.root.classList.toggle('has-focus', !!this.focusId && this.tiles.has(this.focusId));
-    for (const [id, t] of this.tiles) t.el.classList.toggle('is-focused', id === this.focusId);
+  /** Lay tiles out in order, start the visible ones, stop the rest. */
+  #arrange() {
+    const ids = this.orderedIds();
+    const focus = this.focusId && this.tiles.has(this.focusId) ? this.focusId : null;
+    const view = focus ? 'single' : this.view;
+    const shown = focus ? [focus] : ids.slice(0, CAMERA_VIEWS[view].cap);
+    this.root.dataset.view = view;
+    this.root.dataset.count = String(shown.length);
+    ids.forEach((id, i) => {
+      const t = this.tiles.get(id);
+      const on = shown.includes(id);
+      t.el.hidden = !on;
+      t.el.style.order = String(focus ? 0 : i);
+      t.el.classList.toggle('is-lead', on && shown[0] === id);
+      if (on && this.active) t.start(); else t.stop();
+    });
+    this.root.classList.toggle('has-more', !focus && view === 'single' && ids.length > 1);
+  }
+
+  // Long-press a tile, then drag it onto another to swap places.
+  #bindDrag() {
+    let press = null;
+    const clear = () => {
+      if (!press) return;
+      clearTimeout(press.timer);
+      press.ghost?.remove();
+      press.tile?.classList.remove('is-lifted');
+      this.root.querySelector('.is-target')?.classList.remove('is-target');
+      press = null;
+    };
+    const targetAt = (x, y) => document.elementsFromPoint(x, y).map((el) => el.closest?.('.cam'))
+      .find((el) => el && el !== press.tile && this.root.contains(el));
+    this.root.addEventListener('pointerdown', (e) => {
+      const tile = e.target.closest('.cam');
+      if (!tile || document.body.classList.contains('is-editing') || e.button > 0) return;
+      press = { tile, x: e.clientX, y: e.clientY, id: e.pointerId, lifted: false };
+      press.timer = setTimeout(() => {
+        if (!press) return;
+        press.lifted = true;
+        tile.classList.add('is-lifted');
+        tile.setPointerCapture?.(press.id);
+        const r = tile.getBoundingClientRect();
+        const g = document.createElement('div');
+        g.className = 'cam-ghost';
+        g.textContent = tile.querySelector('.cam-name')?.textContent || 'Camera';
+        Object.assign(g.style, { width: `${Math.min(r.width, 260)}px`, left: `${press.x}px`, top: `${press.y}px` });
+        document.body.append(g);
+        press.ghost = g;
+        navigator.vibrate?.(15);
+      }, 320);
+    });
+    this.root.addEventListener('pointermove', (e) => {
+      if (!press || e.pointerId !== press.id) return;
+      if (!press.lifted) {
+        if (Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) clear();
+        return;
+      }
+      e.preventDefault();
+      press.ghost.style.left = `${e.clientX}px`;
+      press.ghost.style.top = `${e.clientY}px`;
+      const t = targetAt(e.clientX, e.clientY);
+      const prev = this.root.querySelector('.is-target');
+      if (prev !== t) { prev?.classList.remove('is-target'); t?.classList.add('is-target'); }
+    });
+    const end = (e) => {
+      if (!press || e.pointerId !== press.id) return;
+      if (press.lifted) {
+        const t = targetAt(e.clientX, e.clientY);
+        if (t) this.swap(press.tile.dataset.id, t.dataset.id);
+      } else if (e.type === 'pointerup' && this.view === 'focus' && !this.focusId) {
+        this.promote(press.tile.dataset.id); // tap a small tile to make it the big one
+      }
+      clear();
+    };
+    this.root.addEventListener('pointerup', end);
+    this.root.addEventListener('pointercancel', end);
+    this.root.addEventListener('contextmenu', (e) => { if (e.target.closest('.cam')) e.preventDefault(); });
   }
 
   cameraName(id) { return this.tiles.get(id)?.cam.name || 'Door camera'; }
@@ -286,16 +413,17 @@ export class CameraWall extends EventTarget {
     if (!this.active) return false;
     if (this.listState !== 'ok') return this.listState !== 'unknown';
     if (!this.tiles.size) return true;
-    return [...this.tiles.values()].every((t) => t.state === 'offline');
+    return [...this.tiles.values()].every((t) => t.state === 'offline' || t.state === 'unsupported');
   }
 
   statusText() {
     switch (this.listState) {
-      case 'unconfigured': return 'No camera service is connected. Add the household server address in Controls → Device.';
-      case 'unauthorized': return 'This display isn’t signed in to the camera service. Pair it again from the household app.';
+      case 'unconfigured': return 'Nest isn’t set up on the server yet.';
+      case 'notConnected': return 'Nest isn’t connected. Sign in to MYDAY as the owner, then choose Connect Nest in Controls.';
+      case 'unauthorized': return 'This display isn’t allowed to open the cameras. Sign in again.';
       case 'offline': return 'Cameras are unreachable right now. Retrying automatically.';
       default:
-        if (this.listState === 'ok' && !this.tiles.size) return 'No cameras are shared with this display.';
+        if (this.listState === 'ok' && !this.tiles.size) return 'No cameras were shared with MYDAY. Connect Nest again and tick the cameras to show.';
         if (this.allOffline) return 'All cameras are offline. Retrying automatically.';
         return '';
     }

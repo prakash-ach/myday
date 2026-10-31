@@ -1157,6 +1157,46 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
 - Tested: home tablet sign-in → Home Display; /api/state and Scan Boxes 403;
   "/" → /home-display/; owner unchanged (MYDAY 200, Home Display 200).
 
+### 31 October 2026 — Home Display redesigned as a customizable dashboard (v86)
+- **Dashboard** is now the day view (each display switches once; Controls,
+  Schedule changes it back). 12-column grid, first 8 rows fill the screen.
+  Edit dashboard: drag cards, drag the corner to resize, Add widget, Set up,
+  Remove, Reset layout. Saved per display in its browser and on the server
+  (DATA_DIR/home-display/layout-<displayId>.json); the newer copy wins.
+- **Widgets:** date and time (Eastern, EST/EDT, whatever the tablet's zone),
+  reminders (today's tasks incl. repeating and overdue, read-only; personal
+  titles hidden while Personal is locked), sticky notes (editable, 4
+  colours), weather (Open-Meteo, no key; place search; default Gaithersburg),
+  photo slideshow, cameras (one per dashboard).
+- **Cameras:** single, 2x2, 3x3, one big + small. Hold a tile, drag onto
+  another to swap (order saved); tap a small tile to make it big. Tiles out
+  of view are stopped, so a 2x2 never holds more than 4 Nest streams.
+  Full-screen and night views use Controls, Cameras layout.
+- **Nest:** lib/nest.js speaks the SDM API for the existing tile code
+  (/api/cameras, /webrtc, /extend, /stop; only those three commands).
+  Secrets: NEST_PROJECT_ID (required), NEST_CLIENT_ID/_SECRET (optional, else
+  the Gmail client), NEST_REFRESH_TOKEN (optional). Owner connects once from
+  Controls; reuses /api/google/callback; token in DATA_DIR/nest-tokens.json
+  (600). RTSP-only cameras say so. Doorbell events (Pub/Sub) not built yet.
+- **Look:** frosted glass over a slow dusk (dark) or morning (light) wash, or
+  blurred own photos. Theme auto = light sunrise to sunset, always dark at
+  night. Fraunces (clock, titles), Atkinson Hyperlegible, Caveat (notes),
+  self-hosted in home-display/fonts (OFL), no Google Fonts.
+- **Kept:** night surveillance, schedule (now Eastern), blackout,
+  brightness, keep-screen-on, doorbell interrupt, photo frame.
+- **Server:** home-only accounts may also use /api/home/* and /api/cameras*;
+  everything else in MYDAY still 403. New: /api/home/session, today, layout,
+  weather, geocode, nest/connect, nest/disconnect (owner only). lib/home.js.
+- The live-event socket (/ws) only connects when a household server address
+  is set in Device; MYDAY has none, so it no longer retries forever.
+- Service worker v2: network-first with offline fallback; the page clears
+  the v1 cache once so new HTML never runs with old cached scripts.
+- Tested headless (home account): access for signed-out, staff, home, owner;
+  drag/resize/add/remove/persist + server match; sticky survives reload;
+  camera views, swap, full screen, night, blackout stops streams; light,
+  dark, phone width. No console errors. Weather and cameras used sample
+  data (sandbox has no outside access); real Nest connection untested.
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

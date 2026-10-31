@@ -1,24 +1,27 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" content="#151a2c">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <title>Home display</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+  <link rel="preload" href="fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body data-view="photos" data-mode="photos">
+<body data-view="dashboard" data-mode="dashboard">
+  <div id="backdrop" aria-hidden="true">
+    <div class="glow glow-a"></div><div class="glow glow-b"></div><div class="glow glow-c"></div>
+    <div id="backdrop-photo"></div>
+    <div class="grain"></div>
+  </div>
   <main id="stage">
     <section id="view-photos" class="view" aria-label="Photo frame">
-      <div id="slides"></div>
+      <div id="slides" class="slides"></div>
       <div id="slides-empty" class="empty-state">
         <p class="empty-title">No photos to show yet</p>
         <p>Open Controls, then Photos, to choose pictures from this device.</p>
@@ -26,7 +29,7 @@
     </section>
 
     <section id="view-cameras" class="view" aria-label="Cameras">
-      <div id="camera-grid" data-count="0"></div>
+      <div id="camera-full"></div>
       <p id="camera-status" class="camera-status" role="status" hidden></p>
     </section>
 
@@ -38,11 +41,7 @@
     </section>
 
     <section id="view-dashboard" class="view" aria-label="Dashboard">
-      <!-- The existing calendar, notes and reminders modules mount here.
-           main.js dispatches 'homedisplay:dashboard' with {visible} on show/hide. -->
-      <div id="dashboard-root">
-        <div class="clock clock-small"><time id="dash-time"></time><p id="dash-date"></p></div>
-      </div>
+      <div id="dashboard-root" class="dash"></div>
     </section>
   </main>
 
@@ -54,7 +53,35 @@
   <div id="dimmer" aria-hidden="true"></div>
   <div id="blackout" hidden role="button" tabindex="0" aria-label="Turn display back on"></div>
 
-  <button id="controls-toggle" type="button" aria-controls="panel" aria-expanded="false">Controls</button>
+  <div class="dock" id="dock">
+    <button id="edit-toggle" type="button" class="dock-btn">Edit dashboard</button>
+    <button id="controls-toggle" type="button" class="dock-btn" aria-controls="panel" aria-expanded="false">Controls</button>
+  </div>
+
+  <div class="edit-bar" id="edit-bar" role="toolbar" aria-label="Editing the dashboard" hidden>
+    <p class="edit-hint">Drag cards to move them. Drag the corner to resize.</p>
+    <button type="button" id="btn-add-widget" class="pill-btn">Add widget</button>
+    <button type="button" id="btn-reset-layout" class="pill-btn ghost">Reset layout</button>
+    <button type="button" id="btn-edit-done" class="pill-btn strong">Done</button>
+  </div>
+
+  <dialog id="add-sheet" class="sheet" aria-labelledby="add-title">
+    <form method="dialog">
+      <header class="sheet-head"><h2 id="add-title">Add a widget</h2><button class="icon-btn" value="close" aria-label="Close">✕</button></header>
+      <ul id="add-list" class="add-list"></ul>
+    </form>
+  </dialog>
+
+  <dialog id="setup-sheet" class="sheet" aria-labelledby="setup-title">
+    <form method="dialog" id="setup-form">
+      <header class="sheet-head"><h2 id="setup-title">Set up</h2><button class="icon-btn" value="close" aria-label="Close">✕</button></header>
+      <div id="setup-fields"></div>
+      <footer class="sheet-foot">
+        <button type="button" id="setup-remove" class="pill-btn ghost danger">Remove widget</button>
+        <button value="ok" class="pill-btn strong">Done</button>
+      </footer>
+    </form>
+  </dialog>
 
   <aside id="panel" aria-labelledby="panel-title" hidden>
     <header class="panel-head">
@@ -74,13 +101,49 @@
       <section class="group">
         <h3>Showing now</h3>
         <div class="seg" id="mode-buttons">
+          <button type="button" data-mode="dashboard">Dashboard</button>
           <button type="button" data-mode="photos">Photo frame</button>
           <button type="button" data-mode="cameras">Cameras</button>
           <button type="button" data-mode="night">Night surveillance</button>
-          <button type="button" data-mode="dashboard">Dashboard</button>
         </div>
         <p class="hint" id="mode-hint"></p>
         <button type="button" id="btn-follow-schedule" class="text-btn" hidden>Return to schedule</button>
+      </section>
+
+      <section class="group">
+        <h3>Look</h3>
+        <label class="field"><span>Theme</span>
+          <select data-setting="theme">
+            <option value="auto">Light by day, dark at night</option>
+            <option value="light">Always light</option>
+            <option value="dark">Always dark</option>
+          </select>
+        </label>
+        <label class="field"><span>Background</span>
+          <select data-setting="backdrop">
+            <option value="gradient">Soft colour</option>
+            <option value="photos">My photos, blurred</option>
+          </select>
+        </label>
+        <button type="button" id="btn-edit-dash" class="text-btn">Edit the dashboard</button>
+      </section>
+
+      <section class="group">
+        <h3>Cameras</h3>
+        <label class="field"><span>Full-screen and night layout</span>
+          <select data-setting="cameraView">
+            <option value="single">Single</option>
+            <option value="grid2">2×2</option>
+            <option value="grid3">3×3</option>
+            <option value="focus">One big, others small</option>
+          </select>
+        </label>
+        <p class="hint">Hold a camera for a moment, then drag it onto another to swap them.</p>
+        <p class="status" id="nest-status" role="status"></p>
+        <div class="row">
+          <button type="button" id="btn-nest-connect" hidden>Connect Nest</button>
+          <button type="button" id="btn-nest-disconnect" class="text-btn" hidden>Disconnect Nest</button>
+        </div>
       </section>
 
       <section class="group">
@@ -175,9 +238,9 @@
         <h3>Daytime</h3>
         <label class="field"><span>During the day, show</span>
           <select data-setting="dayMode">
+            <option value="dashboard">Dashboard</option>
             <option value="photos">Photo frame</option>
             <option value="cameras">Cameras</option>
-            <option value="dashboard">Dashboard</option>
           </select>
         </label>
       </section>
@@ -258,6 +321,18 @@
     </div>
   </aside>
 
+  <script>
+    // Displays that ran the first version cached its files; clear that once so
+    // the new page never runs with old scripts.
+    if (navigator.serviceWorker && navigator.serviceWorker.controller && window.caches) {
+      caches.keys().then(function (keys) {
+        if (keys.indexOf('home-display-v1') < 0) return;
+        Promise.all([caches.delete('home-display-v1'), navigator.serviceWorker.getRegistrations()
+          .then(function (r) { return Promise.all(r.map(function (x) { return x.unregister(); })); })])
+          .then(function () { location.reload(); });
+      });
+    }
+  </script>
   <script type="module" src="js/main.js"></script>
 </body>
 </html>

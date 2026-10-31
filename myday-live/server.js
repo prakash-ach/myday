@@ -30,6 +30,8 @@ const tradein = require("./lib/tradein");
 const repair = require("./lib/repair");
 const scanbox = require("./lib/scanbox");
 const repairExport = require("./lib/repairExport");
+const nest = require("./lib/nest");
+const home = require("./lib/home");
 /* Recent saved versions, so a save can be merged against the version that
    device started from. Kept in memory; after a restart the merge just keeps
    everything from both sides. */
@@ -86,7 +88,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
-  ".webmanifest": "application/manifest+json" };
+  ".webmanifest": "application/manifest+json", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8" };
 
 /* ---------------- sessions ---------------- */
 let sessions = new Map();
@@ -247,7 +249,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const p = url.pathname;
   // Home-only accounts (e.g. the home display tablet): nothing in MYDAY except /home-display.
-  if (p.startsWith("/api/") && !["/api/login", "/api/logout", "/api/me"].includes(p)) {
+  // …except Home Display's own read-only data and the camera streams.
+  if (p.startsWith("/api/") && !["/api/login", "/api/logout", "/api/me"].includes(p) && !p.startsWith("/api/home/") && !p.startsWith("/api/cameras")) {
     const hu = userFromSession(sessionFor(req));
     if (hu && isHomeOnly(hu.username)) return json(res, 403, { error: "This account can only open Home Display." });
   }
@@ -286,6 +289,90 @@ const server = http.createServer(async (req, res) => {
     const u = db.users.find((x) => x.id === s.userId);
     if (!u) return json(res, 401, { error: "not signed in" });
     return json(res, 200, { username: u.username, displayName: u.displayName || u.username });
+  }
+
+  /* ---------------- Home Display ----------------
+   * The owner and home-only accounts. Tasks are read, never changed.
+   * Connecting Nest is the owner's alone; both may watch the cameras. */
+  if (p.startsWith("/api/home/") || p.startsWith("/api/cameras")) {
+    const me = userFromSession(sessionFor(req));
+    if (!me) return json(res, 401, { error: "not signed in" });
+    const isOwner = me.username === ownerName();
+    if (!isOwner && !isHomeOnly(me.username)) return json(res, 403, { error: "Home Display is only for the owner and the home display account." });
+    const readBody = async () => { try { return JSON.parse((await body(req)) || "{}"); } catch (e) { return null; } };
+
+    if (p === "/api/home/session" && req.method === "GET") {
+      return json(res, 200, { role: isOwner ? "owner" : "home", name: me.displayName || me.username,
+        nest: { configured: nest.isConfigured(), connected: nest.isConnected(DATA_DIR) } });
+    }
+    if (p === "/api/home/today" && req.method === "GET") {
+      const db = readJson(usersFile()) || { users: [] };
+      const owner = db.users.find((u) => u.username === ownerName());
+      if (!owner) return json(res, 200, { day: home.easternDay(), tasks: [], hiddenPersonal: 0 });
+      const st = readJson(stateFile(owner.id, "myday_proto_v1"));
+      let v = st && st.value; if (typeof v === "string") { try { v = JSON.parse(v); } catch (e) { v = {}; } }
+      return json(res, 200, home.today(v));
+    }
+    if (p === "/api/home/layout") {
+      const id = url.searchParams.get("display") || "";
+      if (req.method === "GET") return json(res, 200, { layout: home.readLayout(DATA_DIR, id) });
+      if (req.method === "PUT") {
+        if (!isJson(req)) return json(res, 400, { error: "bad request" });
+        const b = await readBody(); if (!b) return json(res, 400, { error: "bad body" });
+        try { return json(res, 200, { layout: home.writeLayout(DATA_DIR, id, b.layout, me.username) }); }
+        catch (e) { return json(res, 400, { error: String(e.message || e) }); }
+      }
+    }
+    if (p === "/api/home/weather" && req.method === "GET") {
+      try { return json(res, 200, await home.weather(url.searchParams.get("lat"), url.searchParams.get("lon"))); }
+      catch (e) { return json(res, 502, { error: "Weather isn't reachable right now." }); }
+    }
+    if (p === "/api/home/geocode" && req.method === "GET") {
+      try { return json(res, 200, { places: await home.geocode(url.searchParams.get("q")) }); }
+      catch (e) { return json(res, 502, { error: "Place search isn't reachable right now." }); }
+    }
+    if (p === "/api/home/nest/connect" && req.method === "GET") {
+      if (!isOwner) return json(res, 403, { error: "Only the owner can connect Nest." });
+      if (!nest.isConfigured()) return json(res, 400, { error: "NEST_PROJECT_ID isn't in the server's secrets yet." });
+      const st = google.newState();
+      oauthStates.set(st, { userId: me.id, at: Date.now(), kind: "nest" });
+      return json(res, 200, { url: nest.authUrl(st) });
+    }
+    if (p === "/api/home/nest/disconnect" && req.method === "POST") {
+      if (!isOwner) return json(res, 403, { error: "Only the owner can disconnect Nest." });
+      nest.forget(DATA_DIR);
+      console.log(`[home] Nest disconnected by ${me.username}`);
+      return json(res, 200, { ok: true });
+    }
+
+    /* Cameras: the contract Home Display's tiles already speak. */
+    const camErr = (e) => json(res, e.status === 409 ? 409 : e.status === 404 ? 404 : 502,
+      { error: String(e.message || e), notConnected: e.status === 409 });
+    if (p === "/api/cameras" && req.method === "GET") {
+      if (!nest.isConfigured()) return json(res, 404, { error: "Nest isn't set up on the server." });
+      try { return json(res, 200, await nest.cameras(DATA_DIR)); } catch (e) { return camErr(e); }
+    }
+    const cm = p.match(/^\/api\/cameras\/([A-Za-z0-9_-]{8,200})\/webrtc(\/extend|\/stop)?$/);
+    if (cm && req.method === "POST") {
+      const b = await readBody(); if (!b) return json(res, 400, { error: "bad body" });
+      try {
+        if (!cm[2]) {
+          const offer = String(b.offerSdp || "");
+          if (!offer.startsWith("v=0") || offer.length > 20000) return json(res, 400, { error: "bad offer" });
+          const r = await nest.startStream(DATA_DIR, cm[1], offer);
+          return json(res, 200, { answerSdp: r.answerSdp, mediaSessionId: r.mediaSessionId, expiresAt: r.expiresAt });
+        }
+        const sid = String(b.mediaSessionId || "").slice(0, 400);
+        if (!sid) return json(res, 400, { error: "missing mediaSessionId" });
+        if (cm[2] === "/extend") {
+          const r = await nest.extendStream(DATA_DIR, cm[1], sid);
+          return json(res, 200, { mediaSessionId: r.mediaSessionId || sid, expiresAt: r.expiresAt });
+        }
+        await nest.stopStream(DATA_DIR, cm[1], sid);
+        return json(res, 200, { ok: true });
+      } catch (e) { return camErr(e); }
+    }
+    return json(res, 404, { error: "not found" });
   }
 
   /* Another device saved? A cheap check every few seconds. */
@@ -638,6 +725,7 @@ const server = http.createServer(async (req, res) => {
     const code = url.searchParams.get("code");
     const st = url.searchParams.get("state");
     const err = url.searchParams.get("error");
+    let back = { href: "/", label: "Back to MYDAY" };
     const page = (title, detail, good) => send(res, 200,
       `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
        <title>${title}</title>
@@ -647,8 +735,8 @@ const server = http.createServer(async (req, res) => {
            <div style="font-size:40px">${good ? "✓" : "⚠"}</div>
            <h1 style="font-size:20px;margin:10px 0 6px">${title}</h1>
            <p style="font-size:14px;color:#8C97A8;line-height:1.7;margin:0 0 20px">${detail}</p>
-           <a href="/" style="display:inline-block;background:#2FBF87;color:#07130D;text-decoration:none;
-             padding:11px 20px;border-radius:10px;font-weight:700;font-size:14px">Back to MYDAY</a>
+           <a href="${back.href}" style="display:inline-block;background:#2FBF87;color:#07130D;text-decoration:none;
+             padding:11px 20px;border-radius:10px;font-weight:700;font-size:14px">${back.label}</a>
          </div></body>`,
       { "content-type": "text/html; charset=utf-8" });
 
@@ -657,6 +745,20 @@ const server = http.createServer(async (req, res) => {
     const pending = oauthStates.get(st);
     oauthStates.delete(st);
     if (!pending) return page("That link has expired", "Start again from the Automation page.", false);
+    if (pending.kind === "nest") {
+      back = { href: "/home-display/", label: "Back to Home Display" };
+      try {
+        const tok = await nest.exchangeCode(code);
+        if (!tok.refresh_token) return page("Remove the old Nest access first",
+          "Google didn't send a lasting permission because it remembers an earlier one. Open myaccount.google.com/connections, remove MYDAY, then connect Nest again.", false);
+        nest.writeTokens(DATA_DIR, { refresh_token: tok.refresh_token, access_token: tok.access_token,
+          expires_at: Date.now() + (tok.expires_in || 3600) * 1000, connectedAt: Date.now() });
+        let n = 0; try { n = (await nest.cameras(DATA_DIR)).length; } catch (e) {}
+        return page("Nest connected", n ? `${n} camera${n === 1 ? "" : "s"} can now show on Home Display.` : "Connected. If no cameras appear, check which ones you shared on Google's consent screen.", true);
+      } catch (e) {
+        return page("Couldn't finish connecting Nest", String(e && e.message || e).replace(/[<>]/g, ""), false);
+      }
+    }
 
     try {
       const tok = await google.exchangeCode(code);

@@ -9,11 +9,19 @@ import { CameraWall } from './cameras.js';
 import { Realtime } from './realtime.js';
 import { HouseholdSync } from './sync.js';
 import { initUI } from './ui.js';
+import { Dashboard } from './dashboard.js';
+import { Backdrop } from './backdrop.js';
+import { initDashUI } from './dash-ui.js';
+import { cameraToolbar, iconButton } from './widgets.js';
+import { apiFetch } from './config.js';
+import { eastern } from './tz.js';
 
 const $ = (s) => document.querySelector(s);
 
 async function boot() {
   await settings.load();
+  // The redesign makes the dashboard the day view, once; later choices stand.
+  if (!settings.values.dash2) await settings.set({ dash2: true, dayMode: 'dashboard' });
   let deviceId = await kv.get('deviceId');
   if (!deviceId) { deviceId = crypto.randomUUID(); await kv.set('deviceId', deviceId); }
   await library.load(deviceId);
@@ -46,7 +54,37 @@ async function boot() {
   slideshow.userPaused = !!runtime.paused;
 
   const modes = new ModeManager(settings, runtime.manual);
-  const cameras = new CameraWall($('#camera-grid'));
+  const cameras = new CameraWall({
+    getOrder: () => settings.values.cameraOrder,
+    setOrder: (ids) => settings.set({ cameraOrder: ids }),
+  });
+  const ctx = { library, wall: cameras, actions: null, session: null };
+  const refreshSession = async () => {
+    try { ctx.session = await apiFetch('/home/session'); } catch { /* keep the last one */ }
+    return ctx.session;
+  };
+  await refreshSession();
+  const dashboard = new Dashboard($('#dashboard-root'), ctx);
+  await dashboard.load(deviceId);
+  const backdrop = new Backdrop(settings, library, () => modes.current.mode);
+
+  // Full-screen cameras: layout buttons, previous/next in single view, and a way back.
+  const fullCam = $('#camera-full');
+  const fullBar = cameraToolbar(settings.values.cameraView, (v) => settings.set({ cameraView: v }), [
+    iconButton('prev', 'Previous camera', () => cameras.rotate(-1), 'cam-tool only-single'),
+    iconButton('next', 'Next camera', () => cameras.rotate(1), 'cam-tool only-single'),
+  ]);
+  const back = document.createElement('button');
+  back.type = 'button';
+  back.className = 'cam-back';
+  back.textContent = 'Dashboard';
+  back.addEventListener('click', () => actions.setMode('dashboard'));
+  fullBar.append(back);
+  fullCam.after(fullBar);
+  const syncFullBar = () => {
+    for (const b of fullBar.querySelectorAll('[data-view]')) b.setAttribute('aria-pressed', String(b.dataset.view === settings.values.cameraView));
+    fullBar.dataset.view = cameras.root.dataset.view || '';
+  };
   const realtime = new Realtime(deviceId, settings.values.deviceName);
   const sync = new HouseholdSync(settings);
 
@@ -71,12 +109,24 @@ async function boot() {
     // Nothing visible while blacked out: stop streams and animation, keep
     // the realtime channel (doorbell) running.
     const screenVisible = !display.blackout && !display.hardwareOff;
-    cameras.setActive(screenVisible && view === 'cameras', { focusCameraId });
+    const camWidget = dashboard.instanceOf('cameras');
+    if (view === 'cameras' || !camWidget) {
+      cameras.mount(fullCam);
+      cameras.setView(settings.values.cameraView);
+    } else {
+      cameras.mount(camWidget.slot);
+      cameras.setView(camWidget.view);
+    }
+    cameras.setActive(screenVisible && (view === 'cameras' || (view === 'dashboard' && !!camWidget)), { focusCameraId });
+    syncFullBar();
+    dashboard.setVisible(screenVisible && view === 'dashboard');
+    backdrop.setActive(screenVisible && view === 'dashboard');
+    backdrop.applyTheme();
 
     const fallback = view === 'cameras' && cameras.allOffline && settings.values.cameraFallbackToPhotos && !focusCameraId;
     body.classList.toggle('camera-fallback', fallback);
     const status = $('#camera-status');
-    const msg = view === 'cameras' ? cameras.statusText() : '';
+    const msg = view === 'cameras' && cameras.listState !== 'unknown' ? cameras.statusText() : '';
     status.hidden = !msg;
     status.textContent = msg;
 
@@ -100,16 +150,17 @@ async function boot() {
   });
   display.addEventListener('change', () => { apply(); saveRuntime(); });
   cameras.addEventListener('status', apply);
+  dashboard.addEventListener('widgets', apply);
   library.addEventListener('change', () => slideshow.poolChanged());
   settings.addEventListener('change', (e) => {
     slideshow.configure(settings.values);
     if ('deviceName' in e.detail) realtime.deviceName = settings.values.deviceName;
-    if ('serverUrl' in e.detail) { realtime.reconnectNow(); cameras.refreshList(); sync.run(); }
+    if ('serverUrl' in e.detail) { if (settings.values.serverUrl) realtime.reconnectNow(); cameras.refreshList(); sync.run(); }
     apply();
   });
 
   // ---- actions (shared by the panel and remote commands) -------------------
-  const actions = {
+  const actions = ctx.actions = {
     setMode: (mode) => {
       if (display.blackout || display.hardwareOff) display.wakeUp('user');
       modes.setManual(mode);
@@ -169,13 +220,11 @@ async function boot() {
   // ---- clocks ---------------------------------------------------------------
   function tickClock() {
     const now = new Date();
-    const t = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    const d = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
-    for (const [ti, di] of [['#clock-time', '#clock-date'], ['#dash-time', '#dash-date']]) {
-      const te = $(ti);
-      if (te.textContent !== t) { te.textContent = t; te.dateTime = now.toISOString(); }
-      $(di).textContent = d;
-    }
+    const e = eastern(now);
+    const t = `${((e.h + 11) % 12) + 1}:${String(e.m).padStart(2, '0')}`;
+    const te = $('#clock-time');
+    if (te.textContent !== t) { te.textContent = t; te.dateTime = now.toISOString(); }
+    $('#clock-date').textContent = `${e.h < 12 ? 'AM' : 'PM'}, ${e.weekday}, ${e.month} ${e.day} (${e.zone})`;
     setTimeout(tickClock, 1000 - now.getMilliseconds() + 5);
   }
   tickClock();
@@ -198,18 +247,21 @@ async function boot() {
 
   // ---- start --------------------------------------------------------------------
   initUI({ settings, slideshow, display, modes, cameras, realtime, sync, actions });
+  initDashUI({ dashboard, actions, session: ctx.session, refreshSession });
+  backdrop.applyBackdrop();
   modes.evaluate();
   apply();
-  realtime.start();
+  // Doorbell and remote control need a household server with a live channel;
+  // MYDAY itself has none, so only connect when one is set in Device.
+  if (settings.values.serverUrl) realtime.start();
   sync.start();
-  if (!library.photos.size) setTimeout(() => $('#controls-toggle').click(), 600);
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     navigator.serviceWorker.register('sw.js').catch((e) => console.warn('[sw]', e));
   }
 
   // Expose for the existing app shell, debugging and integration tests.
-  window.homeDisplay = { settings, library, slideshow, display, modes, cameras, realtime, sync, actions };
+  window.homeDisplay = { settings, library, slideshow, display, modes, cameras, realtime, sync, actions, dashboard, backdrop };
 }
 
 boot().catch((err) => {

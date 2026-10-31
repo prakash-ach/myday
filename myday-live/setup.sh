@@ -277,6 +277,13 @@ if [ ! -f /etc/myday/secrets.env ]; then
 # Google Cloud console, then: systemctl restart myday
 # GOOGLE_CLIENT_ID=
 # GOOGLE_CLIENT_SECRET=
+#
+# Nest cameras on Home Display: the Device Access project ID. Then sign in
+# to Home Display as the owner and choose Controls, Connect Nest.
+# NEST_PROJECT_ID=
+# Only if Device Access is linked to a different OAuth client than Gmail:
+# NEST_CLIENT_ID=
+# NEST_CLIENT_SECRET=
 SEC
   ok "created /etc/myday/secrets.env, waiting for your Google details"
 else

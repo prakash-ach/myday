@@ -245,7 +245,7 @@ async function getAttachment(dir, userId, messageId, attachmentId) {
 const newState = () => crypto.randomBytes(24).toString("base64url");
 
 module.exports = {
-  isConfigured, redirectUri, authUrl, exchangeCode, refresh,
+  isConfigured, redirectUri, authUrl, secrets, exchangeCode, refresh,
   readTokens, writeTokens, forget, accessToken,
   profile, listLabels, listMessages, getMessage, getAttachment, flatten, newState, SCOPE,
 };
