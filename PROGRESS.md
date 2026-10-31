@@ -1148,6 +1148,15 @@ New sidebar item **Scan Boxes** (Team section "scanbox"; `lib/scanbox.js`,
   doorbell / realtime backend described in its API contract.
 - Tested: anonymous 302, owner 200 (page + JS), staff 302, menu Personal-only.
 
+### 31 October 2026 — home-only account for the display tablet
+- team.json `homeOnly: [usernames]` (set with `node manage.js home <user>`,
+  undo with `unhome`). A home-only account: every /api/* except login, logout
+  and me → 403; opening MYDAY pages → 302 to /home-display/; may open
+  /home-display/ (owner too). Not signed in at /home-display/ → 302 to the new
+  /home-login.html (signs in, then goes to Home Display).
+- Tested: home tablet sign-in → Home Display; /api/state and Scan Boxes 403;
+  "/" → /home-display/; owner unchanged (MYDAY 200, Home Display 200).
+
 ## Where we are (Next.js rebuild)
 
 **Phase 1 of 15 complete.** Foundation and responsive shell.

@@ -154,9 +154,12 @@ const isJson = (req) => (req.headers["content-type"] || "").startsWith("applicat
 
 async function serveStatic(req, res, urlPath) {
   // Home Display: the owner only — every file, not just the page.
+  const who = userFromSession(sessionFor(req));
+  // A home-only account opening MYDAY itself goes straight to Home Display.
+  if (who && isHomeOnly(who.username) && !urlPath.startsWith("/home-display") && !path.extname(urlPath) && urlPath !== "/home-login.html") { res.writeHead(302, { location: "/home-display/" }); return res.end(); }
   if (urlPath === "/home-display" || urlPath.startsWith("/home-display/")) {
-    const me = userFromSession(sessionFor(req));
-    if (!me || me.username !== ownerName()) { res.writeHead(302, { location: "/" }); return res.end(); }
+    const me = who;
+    if (!me || (me.username !== ownerName() && !isHomeOnly(me.username))) { res.writeHead(302, { location: "/home-login.html" }); return res.end(); }
     if (urlPath === "/home-display") { res.writeHead(302, { location: "/home-display/" }); return res.end(); }
     if (urlPath === "/home-display/") urlPath = "/home-display/index.html";
   }
@@ -208,6 +211,7 @@ const ALL_SECTIONS = ["dashboard", "today", "tasks", "calendar", "projects",
 const aiAllowed = (username, which) => sectionsFor(username).indexOf(which) >= 0;
 const STARTER_SECTIONS = ["dashboard", "today", "tasks", "calendar", "notes", "settings"];
 
+function isHomeOnly(username) { try { return (readTeam().homeOnly || []).includes(username); } catch (e) { return false; } }
 function readTeam() {
   const t = readJson(TEAM);
   return t && t.users ? t : { owner: null, users: {} };
@@ -242,6 +246,11 @@ function userFromSession(s) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const p = url.pathname;
+  // Home-only accounts (e.g. the home display tablet): nothing in MYDAY except /home-display.
+  if (p.startsWith("/api/") && !["/api/login", "/api/logout", "/api/me"].includes(p)) {
+    const hu = userFromSession(sessionFor(req));
+    if (hu && isHomeOnly(hu.username)) return json(res, 403, { error: "This account can only open Home Display." });
+  }
 
   if (p === "/api/login" && req.method === "POST") {
     const ip = ipOf(req);

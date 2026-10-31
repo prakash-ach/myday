@@ -84,6 +84,15 @@ async function main() {
     return;
   }
 
+  if (cmd === "home" || cmd === "unhome") {
+    // Home-only account: can open only Home Display (create it first with: node manage.js add <username>)
+    const username = normalise(argUser), f = require("node:path").join(process.env.DATA_DIR || "/var/lib/myday", "team.json");
+    let team = {}; try { team = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) {}
+    if (!db.users.some((u) => u.username === username)) return console.log("No account called " + username + " — create it first: node manage.js add " + username);
+    const set = new Set(team.homeOnly || []); cmd === "home" ? set.add(username) : set.delete(username); team.homeOnly = [...set];
+    fs.writeFileSync(f, JSON.stringify(team, null, 2)); console.log((cmd === "home" ? "Home-only: " : "Back to normal: ") + username + ". Home-only accounts: " + (team.homeOnly.join(", ") || "none"));
+    return;
+  }
   if (cmd === "passwd") {
     const username = normalise(argUser);
     const i = db.users.findIndex((u) => u.username === username);
